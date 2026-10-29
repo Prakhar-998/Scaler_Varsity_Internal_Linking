@@ -55,7 +55,7 @@ def _pick(row: dict, names) -> str:
     if isinstance(names, str):
         names = [names]
     for n in names:
-        val = row.get(n)
+        val = row.get(n.strip().lower())
         if val:
             return str(val).strip()
     return ""
@@ -65,7 +65,7 @@ def parse_tab(tab_name: str, values: list[list[str]], cols: dict) -> list[SheetR
     """Turn a tab's raw grid into SheetRows. Pure function, so it is unit-testable offline."""
     if not values:
         return []
-    header = [h.strip() for h in values[0]]
+    header = [h.strip().lower() for h in values[0]]   # tabs differ in casing ("Live link" vs "Live Link")
     rows = []
     for raw in values[1:]:
         row = {header[i]: (raw[i] if i < len(raw) else "") for i in range(len(header)) if header[i]}
