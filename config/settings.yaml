@@ -1,0 +1,51 @@
+# Tunable knobs for the linker. Secrets never go here; they come from environment variables.
+
+wordpress:
+  base_url: "https://www.interviewbit.com/varsity/blog"
+  # Only posts in these statuses are ever edited. Published posts are never touched.
+  editable_statuses: ["draft", "pending"]
+
+mastersheet:
+  # Tabs the bot reads (read-only). Tabs whose names look like Mon'YY are picked up automatically
+  # when auto_detect_month_tabs is true, so a new month needs no config change.
+  auto_detect_month_tabs: true
+  extra_tabs: []
+  columns:
+    draft_link: "Draft Link"
+    live_link: "Live Link"
+    primary_keyword: ["Primary Keyword", "Keyword"]
+    topic: ["Topic", "Blog Title"]
+    publishing_status: "Publishing Status"
+    content_status: "Content Status"
+    wp_category: "WP Category"
+    wp_category_2: "WP Category 2"
+  # A row is "ready for linking" when it has a draft link and content status is one of these.
+  ready_content_statuses: ["Ready to Publish"]
+
+linking:
+  words_per_link: 275        # ~1 contextual link per this many words
+  min_links: 3
+  max_links: 8
+  program_links_min: 1       # guaranteed program landing page links
+  program_links_max: 2
+  same_category_min_share: 0.6
+  max_candidates_for_llm: 14
+  max_links_per_paragraph: 1
+  skip_after_headings: ["faq", "frequently asked questions"]   # never link inside FAQ sections
+  skip_first_paragraphs: 1   # leave the intro paragraph alone
+
+weights:
+  type:       { program: 1.0, pillar: 0.7, blog: 0.5 }
+  category:   { same: 1.0, adjacent: 0.4, other: 0.1 }
+  orphan_boost_max: 0.3      # added for targets with zero inbound links, scaled down as inbound grows
+  orphan_inbound_cap: 5      # at or above this many inbound links, no boost
+  min_relevance: 0.15        # blog targets below this relevance are dropped (programs are exempt)
+
+llm:
+  model_env: "GEMINI_MODEL"          # set GEMINI_MODEL in the workflow to change model without code edits
+  default_model: "gemini-2.5-flash"
+  temperature: 0.2
+  max_rewrite_similarity_drop: 0.45  # reject rewrites that change more than this share of the sentence
+
+run:
+  max_posts_per_run: 5
