@@ -7,7 +7,7 @@ from linker.main import process_post, ready_rows
 from linker.sheets import parse_tab
 from linker.text import norm_url
 
-from tests.fixtures import DRAFT_RAW, FakeControl, FakeWP, cfg, inventory
+from tests.fixtures import BASE, DRAFT_RAW, FakeControl, FakeWP, cfg, inventory
 
 SETTINGS_SKIP = ["faq", "frequently asked questions"]
 
@@ -187,3 +187,87 @@ def test_published_post_is_never_edited():
 
 def test_norm_url():
     assert norm_url("http://WWW.interviewbit.com/varsity/blog/x?utm=1#y") == "https://www.interviewbit.com/varsity/blog/x/"
+
+
+# ---------- link hygiene: writer-added links ----------
+
+HYGIENE_RAW = """<!-- wp:paragraph -->
+<p>Intro paragraph that is always skipped by the linker for safety reasons here.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>Teams evaluate models before shipping them to customers in production. Read the <a href="/varsity/blog/llm-evals/">evaluation checklist</a> before you start building anything new. Retrieval augmented generation is usually the first architecture teams reach for.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>Prompt injection is one of the risks that forward deployed engineers defend against daily. Guardrails reduce the blast radius when a model is tricked by hostile input. See <a href="https://owasp.org/llm-top-10/">OWASP guidance</a> for the full list of risks.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>Many engineers build these skills through structured training rather than on the job alone, because the feedback loop is faster.</p>
+<!-- /wp:paragraph -->
+"""
+
+
+def _hygiene():
+    c = cfg()
+    p = content.parse(HYGIENE_RAW, SETTINGS_SKIP, site_base=BASE,
+                      internal_prefixes=["https://www.interviewbit.com/varsity/",
+                                         "https://www.example.com/programs/"])
+    return c, p
+
+
+def test_existing_links_are_classified_and_resolved():
+    _, p = _hygiene()
+    assert p.existing_internal == 1 and p.existing_external == 1
+    assert "https://www.interviewbit.com/varsity/blog/llm-evals/" in p.existing_links   # relative href resolved
+
+
+def test_no_new_link_in_or_next_to_a_linked_sentence():
+    c, p = _hygiene()
+    ok = content.eligible_sentences(p, gap=1, max_total_per_para=2)
+    texts = [s.text for s in ok.values()]
+    assert not any(t.startswith("Teams evaluate") for t in texts)        # right before a link
+    assert not any(t.startswith("Retrieval augmented") for t in texts)   # right after a link
+    assert not any(t.startswith("Guardrails reduce") for t in texts)     # right before external link
+    assert any(t.startswith("Prompt injection is one") for t in texts)   # two sentences away: fine
+    assert any(t.startswith("Many engineers build") for t in texts)
+
+
+def test_existing_internal_links_count_toward_budget():
+    c, p = _hygiene()
+    d = scoring.Draft(post_id=1, title="t", categories=["Forward Deployed Engineering"], primary_keyword="",
+                      sentences=[], word_count=900, existing_links=p.existing_links,
+                      existing_internal=2, existing_external=5)
+    assert scoring.new_link_budget(d, c) == 1          # 3 total - 2 already present; externals ignored
+    c.settings["linking"]["count_external_in_budget"] = True
+    assert scoring.new_link_budget(d, c) == 0
+
+
+def test_existing_program_link_satisfies_program_quota():
+    c = cfg()
+    p = content.parse(DRAFT_RAW, SETTINGS_SKIP)
+    d = _draft(p)
+    d.existing_program = 1
+    n, shortlist = scoring.plan(scoring.score_targets(inventory(), d, c), d, c)
+    assert not any(x.required for x in shortlist)
+
+
+def test_validator_blocks_new_links_next_to_each_other():
+    c = cfg()
+    p = content.parse(DRAFT_RAW, SETTINGS_SKIP)
+    n, shortlist = scoring.plan(scoring.score_targets(inventory(), _draft(p), c), _draft(p), c)
+    ids = {f"T{i}": x for i, x in enumerate(shortlist, 1)}
+    by_title = {v.target.title: k for k, v in ids.items()}
+    a = next(s for s in p.sentences.values() if s.text.startswith("Every production AI system"))
+    b = next(s for s in p.sentences.values() if s.text.startswith("Teams usually start"))
+    edits = [
+        {"sentence_id": a.id, "target_id": by_title["IIT Delhi - AI Forward Deployed Engineering"],
+         "anchor": "forward deployed engineering programme",
+         "rewritten": "Every production AI system needs a way to prove it works before customers rely on it, a core forward deployed engineering programme skill."},
+        {"sentence_id": b.id, "target_id": by_title["RAG vs Fine-Tuning"], "anchor": "retrieval augmented generation",
+         "rewritten": b.text},
+    ]
+    res = validate.check(edits, ids, p, 3, c.settings)
+    assert len(res.accepted) == 1
+    assert res.rejected[0][1] in {"too close to another link", "paragraph already has a new link"}

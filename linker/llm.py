@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-from .content import ParsedDraft
 from .scoring import Candidate
 
 PROMPT = """You are an SEO editor adding internal links to a blog draft for InterviewBit Varsity.
@@ -19,6 +18,7 @@ RULES
 - Targets marked REQUIRED must be placed if any sentence can carry them naturally.
 - Prefer targets higher in the list; skip a target rather than force it.
 - One link per sentence, at most one link per paragraph (the paragraph is the "p" number in the ID), each target at most once.
+- Never pick two sentences that are next to each other (e.g. p4.s1 and p4.s2); spread links through the article.
 - Anchor: 2-6 words, a descriptive keyword phrase with clear intent. Never "click here", "read more", "this article", "here".
 - Vary anchors; don't reuse the exact same wording as the target's page title.
 - Keep the rewrite minimal: same meaning, same facts, same tone. Do not add numbers, claims, names or statistics that are not in the original sentence. Add at most about 15 words.
@@ -36,7 +36,8 @@ Return JSON only:
 """
 
 
-def build_prompt(title: str, n: int, shortlist: list[Candidate], parsed: ParsedDraft) -> tuple[str, dict]:
+def build_prompt(title: str, n: int, shortlist: list[Candidate], sentences: dict) -> tuple[str, dict]:
+    """`sentences` are only the eligible ones (spaced away from existing links)."""
     ids, lines = {}, []
     for i, c in enumerate(shortlist, 1):
         tid = f"T{i}"
@@ -48,7 +49,7 @@ def build_prompt(title: str, n: int, shortlist: list[Candidate], parsed: ParsedD
             note.append(f'phrase "{c.hint_keyword}" already appears in the draft')
         anchors = "; ".join(c.target.keywords[:4]) or c.target.title
         lines.append(f"{tid} | {c.target.type} | {c.target.title} | {anchors} | {', '.join(note) or '-'}")
-    sents = "\n".join(f"{s.id}: {s.text}" for s in parsed.sentences.values())
+    sents = "\n".join(f"{s.id}: {s.text}" for s in sentences.values())
     return PROMPT.format(title=title, n=n, targets="\n".join(lines), sentences=sents), ids
 
 

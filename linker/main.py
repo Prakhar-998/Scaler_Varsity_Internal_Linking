@@ -50,7 +50,11 @@ def process_post(row, wp, inventory, cat_names, llm, cfg, control, dry_run) -> d
                          f"WP status is '{draft['status']}'")
         return {"post_id": row.post_id, "status": "skipped", "reason": draft["status"]}
 
-    parsed = content.parse(draft["raw"], lk["skip_after_headings"], lk["skip_first_paragraphs"])
+    program_urls = {t.url for t in inventory if t.type == "program"}
+    prefixes = list(cfg.get("wordpress", "internal_link_prefixes", default=[])) + sorted(program_urls)
+    parsed = content.parse(draft["raw"], lk["skip_after_headings"], lk["skip_first_paragraphs"],
+                           site_base=cfg.get("wordpress", "base_url").rstrip("/") + "/",
+                           internal_prefixes=prefixes)
     cats = [cat_names.get(c, "") for c in draft["category_ids"]] or row.wp_categories
     cats = [c for c in cats if c and c.lower() != "uncategorized"] or row.wp_categories
     d = scoring.Draft(
@@ -58,18 +62,25 @@ def process_post(row, wp, inventory, cat_names, llm, cfg, control, dry_run) -> d
         primary_keyword=row.primary_keyword,
         sentences=[s.text for s in parsed.sentences.values()],
         word_count=parsed.word_count, existing_links=parsed.existing_links,
+        existing_internal=parsed.existing_internal, existing_external=parsed.existing_external,
+        existing_program=sum(1 for e in parsed.existing if e.url in program_urls),
     )
+    existing_note = (f"existing links: {d.existing_internal} internal, {d.existing_external} external; "
+                     f"budget {scoring.target_link_count(d.word_count, cfg)}")
 
     cands = scoring.score_targets(inventory, d, cfg)
     n, shortlist = scoring.plan(cands, d, cfg)
-    if n == 0 or not parsed.sentences:
+    offered = content.eligible_sentences(parsed, lk["min_sentence_gap"], lk["max_total_links_per_paragraph"])
+    if n == 0 or not offered:
+        why = ("internal link budget already met by existing links" if n == 0 and
+               scoring.new_link_budget(d, cfg) == 0 else "no candidates or no eligible sentences")
         control.log_post(row.post_id, d.title, ", ".join(cats), "no_links", 0, dry_run,
-                         "no candidates or no editable sentences")
-        return {"post_id": row.post_id, "status": "no_links"}
+                         f"{why} | {existing_note}")
+        return {"post_id": row.post_id, "status": "no_links", "reason": why}
 
-    prompt, ids = build_prompt(d.title, n, shortlist, parsed)
+    prompt, ids = build_prompt(d.title, n, shortlist, offered)
     proposed = llm.propose(prompt)
-    checked = validate.check(proposed, ids, parsed, n, cfg.settings)
+    checked = validate.check(proposed, ids, parsed, n, cfg.settings, offered)
 
     if checked.accepted:
         new_raw = content.apply_edits(parsed, checked.accepted)
@@ -81,8 +92,9 @@ def process_post(row, wp, inventory, cat_names, llm, cfg, control, dry_run) -> d
                     a["anchor"], a["candidate"].target.type, a["candidate"].score,
                     a["original"], a["rewritten"], dry_run, run_at] for a in checked.accepted]
     control.log_changes(change_rows)
-    notes = checked.notes + [f"rejected {len(checked.rejected)}: " +
-                             "; ".join(sorted({r for _, r in checked.rejected}))] if checked.rejected else checked.notes
+    notes = [existing_note] + checked.notes
+    if checked.rejected:
+        notes.append(f"rejected {len(checked.rejected)}: " + "; ".join(sorted({r for _, r in checked.rejected})))
     status = "linked" if checked.accepted else "no_links"
     control.log_post(row.post_id, d.title, ", ".join(cats), status, len(checked.accepted), dry_run,
                      " | ".join(notes))

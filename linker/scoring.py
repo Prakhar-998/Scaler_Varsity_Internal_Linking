@@ -42,6 +42,9 @@ class Draft:
     word_count: int
     existing_links: set[str]
     url: str = ""
+    existing_internal: int = 0     # internal links the writer already added
+    existing_external: int = 0
+    existing_program: int = 0      # of which point at a program landing page
 
 
 def category_match(target: Target, post_cats: list[str], adjacent: dict[str, list[str]]) -> str:
@@ -100,11 +103,24 @@ def target_link_count(word_count: int, cfg: Config) -> int:
     return max(lk["min_links"], min(lk["max_links"], n))
 
 
+def new_link_budget(draft: Draft, cfg: Config) -> int:
+    """Total internal-link budget for the article minus links the writer already added."""
+    lk = cfg.get("linking")
+    existing = draft.existing_internal + (draft.existing_external if lk.get("count_external_in_budget") else 0)
+    return max(0, target_link_count(draft.word_count, cfg) - existing)
+
+
 def plan(candidates: list[Candidate], draft: Draft, cfg: Config) -> tuple[int, list[Candidate]]:
-    """Return (links to place, shortlist for the LLM). The shortlist is the planned set first,
+    """Return (new links to place, shortlist for the LLM). The shortlist is the planned set first,
     then backups the LLM may use if a planned target has no natural spot."""
     lk = cfg.get("linking")
-    n = target_link_count(draft.word_count, cfg)
+    n = new_link_budget(draft, cfg)
+    if n == 0:
+        return 0, []
+
+    # Program links the writer already added count toward the program quota.
+    prog_min = max(0, lk["program_links_min"] - draft.existing_program)
+    prog_max = min(n, max(0, lk["program_links_max"] - draft.existing_program))
 
     programs = [c for c in candidates if c.target.type == "program"]
     own_programs = [c for c in programs if c.cat_match == "same"]
@@ -112,12 +128,12 @@ def plan(candidates: list[Candidate], draft: Draft, cfg: Config) -> tuple[int, l
     blogs = [c for c in candidates if c.target.type != "program"]
 
     chosen: list[Candidate] = []
-    for c in own_programs[: lk["program_links_max"]]:
-        c.required = len(chosen) < lk["program_links_min"]
+    for c in own_programs[:prog_max]:
+        c.required = len(chosen) < prog_min
         chosen.append(c)
-    # A second program slot only goes to another program if it is genuinely relevant.
+    # A further program slot only goes to another program if it is genuinely relevant.
     for c in other_programs:
-        if len(chosen) >= lk["program_links_max"]:
+        if len(chosen) >= prog_max:
             break
         if c.relevance >= 0.7:
             chosen.append(c)

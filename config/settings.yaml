@@ -4,6 +4,9 @@ wordpress:
   base_url: "https://www.interviewbit.com/varsity/blog"
   # Only posts in these statuses are ever edited. Published posts are never touched.
   editable_statuses: ["draft", "pending"]
+  # Links starting with any of these count as INTERNAL (blog posts and Varsity program pages).
+  # Program page URLs from programs.yaml are added automatically.
+  internal_link_prefixes: ["https://www.interviewbit.com/varsity/"]
 
 mastersheet:
   # Tabs the bot reads (read-only). Tabs whose names look like Mon'YY are picked up automatically
@@ -23,14 +26,21 @@ mastersheet:
   ready_content_statuses: ["Ready to Publish"]
 
 linking:
-  words_per_link: 275        # ~1 contextual link per this many words
+  # Budget = TOTAL internal links per article, including links the writer already added.
+  # New links placed = budget - existing internal links (never negative).
+  words_per_link: 275        # ~1 internal link per this many words
   min_links: 3
   max_links: 8
-  program_links_min: 1       # guaranteed program landing page links
+  count_external_in_budget: false   # true: external links also eat into the budget
+  program_links_min: 1       # guaranteed program landing page links (existing ones count)
   program_links_max: 2
   same_category_min_share: 0.6
   max_candidates_for_llm: 14
-  max_links_per_paragraph: 1
+  # Spacing / hygiene
+  max_new_links_per_paragraph: 1
+  max_total_links_per_paragraph: 2  # existing + new links in one paragraph
+  min_sentence_gap: 1        # no new link within this many sentences of any other link
+                             # (1 = never in the same or an adjacent sentence)
   skip_after_headings: ["faq", "frequently asked questions"]   # never link inside FAQ sections
   skip_first_paragraphs: 1   # leave the intro paragraph alone
 

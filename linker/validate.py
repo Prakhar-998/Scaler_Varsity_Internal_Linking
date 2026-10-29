@@ -22,18 +22,24 @@ class Checked:
 
 
 def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
-          n: int, settings: dict) -> Checked:
+          n: int, settings: dict, offered: dict | None = None) -> Checked:
+    """`offered` is the set of sentences shown to the LLM (eligible ones); defaults to all."""
+    lk = settings["linking"]
     max_drop = settings["llm"]["max_rewrite_similarity_drop"]
-    per_para = settings["linking"]["max_links_per_paragraph"]
-    prog_min = settings["linking"]["program_links_min"]
+    new_per_para = lk["max_new_links_per_paragraph"]
+    total_per_para = lk["max_total_links_per_paragraph"]
+    gap = lk["min_sentence_gap"]
+    offered = parsed.sentences if offered is None else offered
+    existing_anchors = {e.anchor.strip().lower() for e in parsed.existing if e.anchor}
 
     accepted, rejected = [], []
-    used_targets, used_sentences, para_count = set(), set(), {}
+    used_targets, used_sentences, para_new = set(), set(), {}
+    linked_orders = set(parsed.linked_orders)    # grows as new links are accepted
 
     for e in raw_edits:
         sid, tid = str(e.get("sentence_id", "")), str(e.get("target_id", ""))
         anchor, rewritten = str(e.get("anchor", "")).strip(), str(e.get("rewritten", "")).strip()
-        s, cand = parsed.sentences.get(sid), ids.get(tid)
+        s, cand = offered.get(sid), ids.get(tid)
 
         reason = None
         if s is None:
@@ -42,10 +48,18 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
             reason = "unknown target_id"
         elif tid in used_targets:
             reason = "target already used"
+        elif cand.target.url in parsed.existing_links:
+            reason = "target already linked in the post"
         elif sid in used_sentences:
             reason = "sentence already has a link"
-        elif para_count.get(s.block, 0) >= per_para:
-            reason = "paragraph already has a link"
+        elif any(abs(s.order - o) <= gap for o in linked_orders):
+            reason = "too close to another link"
+        elif para_new.get(s.block, 0) >= new_per_para:
+            reason = "paragraph already has a new link"
+        elif parsed.para_link_count.get(s.block, 0) + para_new.get(s.block, 0) >= total_per_para:
+            reason = "paragraph link cap reached"
+        elif anchor.lower() in existing_anchors:
+            reason = "anchor duplicates an existing link's anchor"
         elif not 2 <= len(anchor.split()) <= 8:
             reason = "anchor length out of range"
         elif anchor.lower() in GENERIC_ANCHORS:
@@ -68,14 +82,15 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
             continue
         used_targets.add(tid)
         used_sentences.add(sid)
-        para_count[s.block] = para_count.get(s.block, 0) + 1
+        linked_orders.add(s.order)
+        para_new[s.block] = para_new.get(s.block, 0) + 1
         accepted.append({
             "sentence_id": sid, "anchor": anchor, "rewritten": rewritten,
             "url": cand.target.url, "candidate": cand, "original": s.text,
         })
 
     notes = []
-    progs = sum(1 for a in accepted if a["candidate"].target.type == "program")
-    if any(c.required for c in ids.values()) and progs < prog_min:
+    placed = {a["candidate"].target.url for a in accepted}
+    if any(c.required and c.target.url not in placed for c in ids.values()):
         notes.append("required program link not placed")
     return Checked(accepted, rejected, notes)

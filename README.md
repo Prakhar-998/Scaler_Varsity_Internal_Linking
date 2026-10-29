@@ -51,11 +51,24 @@ Hard exclusions: the post itself, pages it already links to, and pages targeting
 keyword (cannibalisation guard).
 
 ### 3. Quotas
-- Link budget: about 1 per 275 words, clamped to 3–8.
+- Link budget: about 1 internal link per 275 words, clamped to 3–8 **in total, including links the writer already added**.
 - The post's own program page is **required** (min 1, max 2 program links).
 - At least 60% of blog links come from the post's own WP category.
 
 All weights and quotas live in `config/settings.yaml`.
+
+### Link hygiene (writer-added links)
+Writers often add their own links. Every existing link in the post is read first and classified as
+**internal** (Varsity blog or program page) or **external**, with relative URLs resolved.
+- Existing internal links **count toward the article's total budget**: new links = budget − existing
+  internal. External links can be counted too (`count_external_in_budget`).
+- Existing program-page links count toward the program quota.
+- Pages the post already links to are never linked again.
+- No new link in a sentence that already has one, or in the sentence directly before or after
+  (`min_sentence_gap`). New links also keep that distance from each other.
+- At most 1 new link per paragraph and at most 2 links per paragraph in total, counting the
+  writer's links (`max_total_links_per_paragraph`).
+- A new anchor may not repeat an existing link's anchor text.
 
 ### 4. LLM rewrite + validation
 Gemini gets the shortlist and a list of sentences it may edit. Excluded from that list: the intro, headings,
