@@ -1,7 +1,10 @@
-"""Loads YAML config and environment secrets into one object."""
+"""Loads config files (settings.yaml, categories.yaml, program_pages.csv) and environment
+secrets into one object."""
 from __future__ import annotations
 
+import csv
 import json
+from urllib.parse import urlsplit, urlunsplit
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,17 +57,43 @@ def _load_yaml(name: str) -> dict:
         return yaml.safe_load(fh) or {}
 
 
+def _split(cell: str) -> list[str]:
+    return [x.strip() for x in (cell or "").split("|") if x.strip()]
+
+
+def clean_url(url: str) -> str:
+    """Drop tracking query strings/fragments (utm_*, gclid...) but keep the path exactly as given,
+    so the link we insert matches the live page (with or without a trailing slash)."""
+    parts = urlsplit((url or "").strip())
+    return urlunsplit((parts.scheme or "https", parts.netloc, parts.path, "", "")) if parts.netloc else ""
+
+
+def load_programs(path: Path) -> list[Program]:
+    """Program landing pages from a CSV anyone can edit (GitHub's web editor works fine).
+    Columns: id, active, name, url, categories, anchors. Multiple values separated by '|'.
+    Rows with active != yes are ignored, so a program can be paused without deleting it."""
+    programs, seen = [], set()
+    with open(path, encoding="utf-8-sig", newline="") as fh:
+        for i, row in enumerate(csv.DictReader(fh), start=2):
+            row = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
+            if not row.get("id"):
+                continue
+            if row.get("active", "yes").lower() not in {"yes", "y", "true", "1"}:
+                continue
+            if row["id"] in seen:
+                raise SystemExit(f"{path.name} line {i}: duplicate id '{row['id']}'")
+            seen.add(row["id"])
+            programs.append(Program(
+                id=row["id"], name=row.get("name") or row["id"], url=clean_url(row.get("url", "")),
+                categories=_split(row.get("categories", "")), keywords=_split(row.get("anchors", "")),
+            ))
+    return programs
+
+
 def load_config(require_secrets: bool = True) -> Config:
     settings = _load_yaml("settings.yaml")
-    prog = _load_yaml("programs.yaml")
-
-    programs = [
-        Program(
-            id=p["id"], name=p["name"], url=(p.get("url") or "").strip(),
-            categories=p.get("categories", []), keywords=p.get("keywords", []),
-        )
-        for p in prog.get("programs", [])
-    ]
+    prog = _load_yaml("categories.yaml")
+    programs = load_programs(CONFIG_DIR / "program_pages.csv")
 
     names = [
         "GOOGLE_SERVICE_ACCOUNT_JSON", "MASTERSHEET_ID", "CONTROL_SHEET_ID",

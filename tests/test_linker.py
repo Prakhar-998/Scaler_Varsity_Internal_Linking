@@ -271,3 +271,40 @@ def test_validator_blocks_new_links_next_to_each_other():
     res = validate.check(edits, ids, p, 3, c.settings)
     assert len(res.accepted) == 1
     assert res.rejected[0][1] in {"too close to another link", "paragraph already has a new link"}
+
+
+# ---------- program pages file ----------
+
+from linker.config import CONFIG_DIR, load_programs
+from linker.inventory import Target
+
+
+def test_program_pages_csv_parsing(tmp_path):
+    f = tmp_path / "p.csv"
+    f.write_text(
+        "id,active,name,url,categories,anchors\n"
+        "a,yes,Prog A,https://www.interviewbit.com/varsity/iit-delhi/x?utm_source=ads&gclid=1,Cat 1|Cat 2,kw one|kw two\n"
+        "b,no,Prog B,https://www.interviewbit.com/varsity/iit-delhi/y,Cat 3,kw\n", encoding="utf-8")
+    progs = load_programs(f)
+    assert [p.id for p in progs] == ["a"]                                 # inactive row skipped
+    assert progs[0].url == "https://www.interviewbit.com/varsity/iit-delhi/x"   # tracking stripped, no slash added
+    assert progs[0].categories == ["Cat 1", "Cat 2"] and progs[0].keywords == ["kw one", "kw two"]
+
+
+def test_shipped_program_pages_are_valid():
+    progs = load_programs(CONFIG_DIR / "program_pages.csv")
+    assert len(progs) == 7
+    assert all(p.url.startswith("https://www.interviewbit.com/varsity/") for p in progs)
+    assert all(len(p.keywords) >= 3 for p in progs)
+
+
+def test_inserted_link_uses_exact_program_url():
+    c = cfg()
+    p = content.parse(DRAFT_RAW, SETTINGS_SKIP)
+    inv = [t for t in inventory() if t.type != "program"] + [
+        Target("https://www.interviewbit.com/varsity/iit-delhi/ai-engineering/", "IIT Delhi - AI Forward Deployed Engineering",
+               "program", ["Forward Deployed Engineering"], ["forward deployed engineering programme"],
+               program_id="fde", href="https://www.interviewbit.com/varsity/iit-delhi/ai-engineering")]
+    wp, ctl, llm = FakeWP(DRAFT_RAW), FakeControl(), FakeLLM()
+    process_post(Row(), wp, inv, {7: "Forward Deployed Engineering"}, llm, c, ctl, dry_run=False)
+    assert 'href="https://www.interviewbit.com/varsity/iit-delhi/ai-engineering"' in wp.updated

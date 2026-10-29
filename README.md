@@ -15,7 +15,7 @@ flowchart LR
     MS[(MasterSheet<br/>read-only)] -->|drafts ready to link| R[Runner]
     WP[(WordPress<br/>REST API)] -->|published posts, categories,<br/>existing links| INV[Link inventory]
     MS -->|primary keywords| INV
-    CFG[programs.yaml] -->|program pages,<br/>anchor variants| INV
+    CFG[program_pages.csv] -->|program pages,<br/>anchor variants| INV
     INV --> SC[Scoring + quotas<br/>deterministic]
     R --> SC
     SC -->|~14-target shortlist| LLM[Gemini<br/>rewrite sentences]
@@ -31,8 +31,23 @@ site, never writes HTML, and can't introduce a URL that the scorer didn't shortl
 Rebuilt every run from live sources, so a newly published post becomes a link target automatically:
 - published posts from the WordPress REST API (URL, title, categories, outbound links)
 - each post's primary keyword from the MasterSheet, plus its title phrase, as anchor variants
-- program landing pages and their anchor variants from `config/programs.yaml`
+- program landing pages and their anchor variants from `config/program_pages.csv` (see below)
 - inbound-link counts per URL, computed from every published post's content
+
+### Program pages file
+`config/program_pages.csv` is the one place to add, pause or remove program landing pages. Edit it in
+GitHub's web editor (it renders as a table); the next run picks it up.
+
+| Column | Meaning |
+|---|---|
+| `id` | short unique name, e.g. `fde` |
+| `active` | `yes` to link to it, `no` to pause without deleting |
+| `name` | program name (shown to the LLM) |
+| `url` | landing page URL; tracking parameters are stripped automatically |
+| `categories` | WordPress categories this program "owns", separated by `\|` (exact WP names) |
+| `anchors` | anchor-text ideas, most preferred first, separated by `\|` |
+
+A program with no categories is still a link target, but only where it's highly relevant.
 
 ### 2. Weightage function
 
@@ -103,7 +118,8 @@ linker/
   content.py     safe-sentence extraction and edit application
   llm.py         Gemini prompt + call
   validate.py    deterministic edit checks
-config/          settings.yaml (weights, quotas), programs.yaml (program pages, category map)
+config/          settings.yaml (weights, quotas), program_pages.csv (program pages),
+                 categories.yaml (adjacent categories, pillar pages, anchor overrides)
 tests/           offline tests incl. an end-to-end run with fake WordPress + LLM
 .github/workflows/
   link.yml       scheduled + manual run

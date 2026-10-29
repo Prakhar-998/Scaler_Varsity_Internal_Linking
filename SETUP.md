@@ -66,9 +66,10 @@ the editor's **Revisions** panel.
 
 ## 4. Program landing pages
 
-Fill each `url` in `config/programs.yaml` and review the anchor `keywords`. Programs with an empty URL
-are skipped (the run log warns about it), so linking works before this is done, just without the
-program-page weighting.
+Program pages are listed in `config/program_pages.csv`, pre-filled with the 7 programs from the Varsity
+site header and footer. To add one, add a row; to pause one, set `active` to `no`. Each row's
+`categories` must match WordPress category names exactly. This sets which blog categories link to it
+most.
 
 ## 5. First runs (dry run first)
 

@@ -2,7 +2,7 @@
 
 One run:
  1. read the MasterSheet (read-only) for drafts that are ready and not yet linked
- 2. rebuild the link inventory from WordPress + MasterSheet + config/programs.yaml
+ 2. rebuild the link inventory from WordPress + MasterSheet + config/program_pages.csv
  3. for each draft: score targets -> plan -> Gemini proposes rewrites -> validate -> apply
  4. log every accepted/rejected edit to the control sheet; update the WP draft unless dry-run
 """

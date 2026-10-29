@@ -5,7 +5,7 @@ wordpress:
   # Only posts in these statuses are ever edited. Published posts are never touched.
   editable_statuses: ["draft", "pending"]
   # Links starting with any of these count as INTERNAL (blog posts and Varsity program pages).
-  # Program page URLs from programs.yaml are added automatically.
+  # Program page URLs from program_pages.csv are added automatically.
   internal_link_prefixes: ["https://www.interviewbit.com/varsity/"]
 
 mastersheet:

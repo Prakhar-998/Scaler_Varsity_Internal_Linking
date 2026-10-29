@@ -1,0 +1,23 @@
+# How WordPress categories relate to each other, plus optional per-URL tweaks.
+# Program landing pages live in config/program_pages.csv.
+
+# Categories close enough to borrow links from (scored as "adjacent", not "other").
+# Names must match the WordPress category names exactly.
+adjacent_categories:
+  "AI Powered Operations": ["Business Operations", "Supply Chain Management"]
+  "Business Operations": ["AI Powered Operations", "Supply Chain Management"]
+  "Supply Chain Management": ["AI Powered Operations", "Business Operations"]
+  "Generative AI": ["Forward Deployed Engineering", "AI Powered Product Management"]
+  "Forward Deployed Engineering": ["Generative AI", "AI Powered Product Management"]
+  "AI Powered Product Management": ["Generative AI", "Forward Deployed Engineering", "AI Powered Marketing"]
+  "AI Powered Marketing": ["AI Powered Product Management"]
+  "Quantum Computing": ["Generative AI"]
+
+# Optional: URLs that should be weighted as pillar pages (type weight "pillar" instead of "blog").
+pillar_urls: []
+
+# Optional: extra anchor variants for specific blog URLs, on top of what the MasterSheet gives.
+keyword_overrides: {}
+#  "https://www.interviewbit.com/varsity/blog/who-is-a-forward-deployed-engineer/":
+#    - "forward deployed engineer"
+#    - "what an FDE does"

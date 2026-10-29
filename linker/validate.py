@@ -86,7 +86,7 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
         para_new[s.block] = para_new.get(s.block, 0) + 1
         accepted.append({
             "sentence_id": sid, "anchor": anchor, "rewritten": rewritten,
-            "url": cand.target.url, "candidate": cand, "original": s.text,
+            "url": cand.target.link, "candidate": cand, "original": s.text,
         })
 
     notes = []

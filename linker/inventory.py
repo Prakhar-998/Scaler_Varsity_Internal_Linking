@@ -15,7 +15,7 @@ from .wordpress import PublishedPost
 
 @dataclass
 class Target:
-    url: str
+    url: str                      # normalised key, used only for comparisons
     title: str
     type: str                     # "program" | "pillar" | "blog"
     categories: list[str]
@@ -23,7 +23,12 @@ class Target:
     inbound: int = 0
     post_id: int | None = None
     program_id: str | None = None
+    href: str = ""                # the exact URL written into the post (live canonical form)
     extras: dict = field(default_factory=dict)
+
+    @property
+    def link(self) -> str:
+        return self.href or self.url
 
 
 def _title_phrase(title: str) -> str | None:
@@ -75,16 +80,19 @@ def build_inventory(posts: list[PublishedPost], categories: dict[int, str],
             url=url, title=p.title,
             type="pillar" if url in cfg.pillar_urls else "blog",
             categories=[categories.get(c, str(c)) for c in p.category_ids],
-            keywords=_dedupe(kws), inbound=inbound.get(url, 0), post_id=p.id,
+            keywords=_dedupe(kws), inbound=inbound.get(url, 0), post_id=p.id, href=p.url,
         ))
 
     for prog in cfg.programs:
         if not prog.url:
-            print(f"[warn] program '{prog.id}' has no url in config/programs.yaml; skipping it")
+            print(f"[warn] program '{prog.id}' has no url in config/program_pages.csv; skipping it")
             continue
+        if not prog.categories:
+            print(f"[info] program '{prog.id}' has no categories; it is only linked where highly relevant")
         url = norm_url(prog.url)
         targets.append(Target(
             url=url, title=prog.name, type="program", categories=prog.categories,
             keywords=_dedupe(prog.keywords), inbound=inbound.get(url, 0), program_id=prog.id,
+            href=prog.url,
         ))
     return targets
