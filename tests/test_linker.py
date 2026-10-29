@@ -1,0 +1,189 @@
+import re
+
+import pytest
+
+from linker import content, scoring, validate
+from linker.main import process_post, ready_rows
+from linker.sheets import parse_tab
+from linker.text import norm_url
+
+from tests.fixtures import DRAFT_RAW, FakeControl, FakeWP, cfg, inventory
+
+SETTINGS_SKIP = ["faq", "frequently asked questions"]
+
+
+# ---------- MasterSheet parsing ----------
+
+OCT_HEADER = ["Course", "Cluster", "Topic", "Primary Keyword", "SV", "Author", "Final Content Doc",
+              "Content Status", "Publishing Status", "Publishing Date", "Draft Link", "Live Link",
+              "WP Author", "WP Category", "WP Category 2"]
+
+
+def test_parse_tab_reads_draft_id_and_categories():
+    c = cfg()
+    rows = parse_tab("Oct'26", [OCT_HEADER, [
+        "IIT Delhi · AI FDE", "FDE skills", "LLM Evals for FDEs", "llm evaluation", "500", "Purnima", "O29",
+        "Ready to Publish", "Yet to Publish", "",
+        "https://www.interviewbit.com/varsity/blog/wp-admin/post.php?post=1940&action=edit", "",
+        "Varsity", "Forward Deployed Engineering", ""]], c.get("mastersheet", "columns"))
+    assert rows[0].post_id == 1940
+    assert rows[0].wp_categories == ["Forward Deployed Engineering"]
+    assert rows[0].primary_keyword == "llm evaluation"
+
+
+def test_ready_rows_skips_published_done_and_missing_draft():
+    c = cfg()
+    cols = c.get("mastersheet", "columns")
+    link = "https://x/wp-admin/post.php?post={}&action=edit"
+    grid = [OCT_HEADER,
+            ["c", "c", "A", "a", "", "", "", "Ready to Publish", "Yet to Publish", "", link.format(1), "", "", "FDE", ""],
+            ["c", "c", "B", "b", "", "", "", "Ready to Publish", "Published", "", link.format(2), "", "", "FDE", ""],
+            ["c", "c", "C", "c", "", "", "", "Ready to Publish", "Yet to Publish", "", link.format(3), "", "", "FDE", ""],
+            ["c", "c", "D", "d", "", "", "", "Ready to Publish", "Yet to Publish", "", "", "", "", "FDE", ""]]
+    rows = parse_tab("Oct'26", grid, cols)
+    ids = [r.post_id for r in ready_rows(rows, c.settings, done={3}, only=None)]
+    assert ids == [1]
+
+
+# ---------- draft parsing ----------
+
+def test_parse_skips_intro_faq_and_formatted_sentences():
+    p = content.parse(DRAFT_RAW, SETTINGS_SKIP, skip_first=1)
+    texts = [s.text for s in p.sentences.values()]
+    assert not any(t.startswith("Forward deployed engineers sit") for t in texts)   # intro
+    assert not any("Is prompt injection a real risk" in t for t in texts)            # FAQ
+    assert not any("observability" in t and "saves the week" in t for t in texts)    # has <strong>
+    assert any(t.startswith("Tracing every call") for t in texts)                     # plain sibling ok
+
+
+def test_apply_edit_inserts_anchor_and_keeps_blocks():
+    p = content.parse(DRAFT_RAW, SETTINGS_SKIP)
+    sid = next(s.id for s in p.sentences.values() if s.text.startswith("Prompt injection is one"))
+    new = content.apply_edits(p, [{
+        "sentence_id": sid, "anchor": "prompt injection attacks",
+        "rewritten": "Defending against prompt injection attacks is one of the risks that forward deployed engineers handle on every customer project they take on.",
+        "url": "https://www.interviewbit.com/varsity/blog/prompt-injection/"}])
+    assert '<a href="https://www.interviewbit.com/varsity/blog/prompt-injection/">prompt injection attacks</a>' in new
+    assert new.count("<!-- wp:paragraph -->") == DRAFT_RAW.count("<!-- wp:paragraph -->")
+    assert "<strong>observability</strong>" in new
+
+
+# ---------- scoring ----------
+
+def _draft(p):
+    return scoring.Draft(post_id=99, title="LLM Evals for FDEs", categories=["Forward Deployed Engineering"],
+                         primary_keyword="llm evaluation", sentences=[s.text for s in p.sentences.values()],
+                         word_count=900, existing_links=p.existing_links)
+
+
+def test_scores_prefer_program_and_same_category():
+    c = cfg()
+    p = content.parse(DRAFT_RAW, SETTINGS_SKIP)
+    cands = scoring.score_targets(inventory(), _draft(p), c)
+    by_url = {x.target.url: x for x in cands}
+    fde_prog = by_url["https://www.example.com/programs/fde/"]
+    assert fde_prog.cat_match == "same"
+    assert by_url["https://www.interviewbit.com/varsity/blog/prompt-injection/"].relevance == 1.0
+    assert "https://www.interviewbit.com/varsity/blog/takt-time/" not in by_url   # irrelevant, dropped
+    assert fde_prog.score > by_url["https://www.interviewbit.com/varsity/blog/rlhf/"].score if \
+        "https://www.interviewbit.com/varsity/blog/rlhf/" in by_url else True
+
+
+def test_plan_requires_own_program_and_meets_category_share():
+    c = cfg()
+    p = content.parse(DRAFT_RAW, SETTINGS_SKIP)
+    n, shortlist = scoring.plan(scoring.score_targets(inventory(), _draft(p), c), _draft(p), c)
+    assert n == 3                                      # 900 words / 275 -> 3
+    assert shortlist[0].target.program_id == "fde" and shortlist[0].required
+    planned_blogs = [x for x in shortlist[:n] if x.target.type == "blog"]
+    assert all(x.cat_match == "same" for x in planned_blogs)
+
+
+def test_cannibalising_target_is_excluded():
+    c = cfg()
+    p = content.parse(DRAFT_RAW, SETTINGS_SKIP)
+    d = _draft(p)
+    d.primary_keyword = "prompt injection"
+    urls = {x.target.url for x in scoring.score_targets(inventory(), d, c)}
+    assert "https://www.interviewbit.com/varsity/blog/prompt-injection/" not in urls
+
+
+# ---------- validation ----------
+
+def _ids_and_parsed():
+    c = cfg()
+    p = content.parse(DRAFT_RAW, SETTINGS_SKIP)
+    n, shortlist = scoring.plan(scoring.score_targets(inventory(), _draft(p), c), _draft(p), c)
+    ids = {f"T{i}": x for i, x in enumerate(shortlist, 1)}
+    return c, p, n, ids
+
+
+def test_validation_rejects_bad_edits():
+    c, p, n, ids = _ids_and_parsed()
+    sid = next(s.id for s in p.sentences.values() if s.text.startswith("Prompt injection is one"))
+    orig = p.sentences[sid].text
+    edits = [
+        {"sentence_id": "p99.s0", "target_id": "T1", "anchor": "FDE course", "rewritten": "x FDE course"},
+        {"sentence_id": sid, "target_id": "T404", "anchor": "prompt injection", "rewritten": orig},
+        {"sentence_id": sid, "target_id": "T1", "anchor": "click here", "rewritten": orig + " click here"},
+        {"sentence_id": sid, "target_id": "T1", "anchor": "FDE course",
+         "rewritten": "Prompt injection is one of the 3 risks that forward deployed engineers have to defend "
+                      "against on every customer project they take on, a core FDE course topic."},
+        {"sentence_id": sid, "target_id": "T1", "anchor": "FDE course",
+         "rewritten": "Teams that took an FDE course say defending systems is hard."},
+    ]
+    res = validate.check(edits, ids, p, n, c.settings)
+    reasons = [r for _, r in res.rejected]
+    assert reasons == ["unknown sentence_id", "unknown target_id", "generic anchor",
+                       "rewrite introduced new numbers", "rewrite changed too much"]
+    assert not res.accepted and "required program link not placed" in res.notes
+
+
+# ---------- end to end (fake WP + fake LLM) ----------
+
+class FakeLLM:
+    def __init__(self):
+        self.prompt = None
+
+    def propose(self, prompt):
+        self.prompt = prompt
+        ids = dict(re.findall(r"^(T\d+) \| \w+ \| ([^|]+) \|", prompt, re.M))
+        tid = {v.strip(): k for k, v in ids.items()}
+        sid_pi = re.search(r"^(p\d+\.s\d+): Prompt injection is one", prompt, re.M).group(1)
+        sid_tr = re.search(r"^(p\d+\.s\d+): Many engineers build", prompt, re.M).group(1)
+        return [
+            {"sentence_id": sid_pi, "target_id": tid["Prompt Injection Attacks"], "anchor": "Prompt injection",
+             "rewritten": "Prompt injection is one of the risks that forward deployed engineers have to defend against on every customer project they take on."},
+            {"sentence_id": sid_tr, "target_id": tid["IIT Delhi - AI Forward Deployed Engineering"],
+             "anchor": "forward deployed engineering programme",
+             "rewritten": "Many engineers build these skills through a structured forward deployed engineering programme rather than on the job alone, because the feedback loop is faster."},
+        ]
+
+
+class Row:
+    post_id, primary_keyword, wp_categories, topic = 1940, "llm evaluation", ["Forward Deployed Engineering"], "LLM Evals"
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_process_post_end_to_end(dry_run):
+    c = cfg()
+    wp, ctl, llm = FakeWP(DRAFT_RAW), FakeControl(), FakeLLM()
+    res = process_post(Row(), wp, inventory(), {7: "Forward Deployed Engineering"}, llm, c, ctl, dry_run)
+    assert res["status"] == "linked" and len(res["accepted"]) == 2
+    assert "REQUIRED" in llm.prompt and "Is prompt injection a real risk" not in llm.prompt
+    assert len(ctl.changes) == 2
+    if dry_run:
+        assert wp.updated is None
+    else:
+        assert 'href="https://www.example.com/programs/fde/"' in wp.updated
+
+
+def test_published_post_is_never_edited():
+    c = cfg()
+    wp, ctl = FakeWP(DRAFT_RAW, status="publish"), FakeControl()
+    res = process_post(Row(), wp, inventory(), {}, FakeLLM(), c, ctl, dry_run=False)
+    assert res["status"] == "skipped" and wp.updated is None
+
+
+def test_norm_url():
+    assert norm_url("http://WWW.interviewbit.com/varsity/blog/x?utm=1#y") == "https://www.interviewbit.com/varsity/blog/x/"
