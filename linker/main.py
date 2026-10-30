@@ -14,10 +14,10 @@ import os
 import traceback
 from pathlib import Path
 
-from . import content, scoring, validate
+from . import pipeline
 from .config import load_config
 from .inventory import build_inventory
-from .llm import Gemini, build_prompt
+from .llm import Gemini
 from .sheets import ControlSheet, MasterSheet, _now
 from .wordpress import NotEditable, WordPress
 
@@ -42,50 +42,31 @@ def ready_rows(rows, settings, done: set[int], only: int | None):
     return out
 
 
+def category_names(ids, cat_names: dict, fallback: list[str]) -> list[str]:
+    cats = [cat_names.get(c, "") for c in ids]
+    return [c for c in cats if c and c.lower() != "uncategorized"] or list(fallback)
+
+
 def process_post(row, wp, inventory, cat_names, llm, cfg, control, dry_run) -> dict:
-    lk = cfg.get("linking")
     draft = wp.get_draft(row.post_id)
     if draft["status"] not in cfg.get("wordpress", "editable_statuses"):
         control.log_post(row.post_id, draft["title"], "", "skipped", 0, dry_run,
                          f"WP status is '{draft['status']}'")
         return {"post_id": row.post_id, "status": "skipped", "reason": draft["status"]}
 
-    program_urls = {t.url for t in inventory if t.type == "program"}
-    prefixes = list(cfg.get("wordpress", "internal_link_prefixes", default=[])) + sorted(program_urls)
-    parsed = content.parse(draft["raw"], lk["skip_after_headings"], lk["skip_first_paragraphs"],
-                           site_base=cfg.get("wordpress", "base_url").rstrip("/") + "/",
-                           internal_prefixes=prefixes)
-    cats = [cat_names.get(c, "") for c in draft["category_ids"]] or row.wp_categories
-    cats = [c for c in cats if c and c.lower() != "uncategorized"] or row.wp_categories
-    d = scoring.Draft(
-        post_id=row.post_id, title=draft["title"], categories=cats,
-        primary_keyword=row.primary_keyword,
-        sentences=[s.text for s in parsed.sentences.values()],
-        word_count=parsed.word_count, existing_links=parsed.existing_links,
-        existing_internal=parsed.existing_internal, existing_external=parsed.existing_external,
-        existing_program=sum(1 for e in parsed.existing if e.url in program_urls),
-    )
-    existing_note = (f"existing links: {d.existing_internal} internal, {d.existing_external} external; "
-                     f"budget {scoring.target_link_count(d.word_count, cfg)}")
-
-    cands = scoring.score_targets(inventory, d, cfg)
-    n, shortlist = scoring.plan(cands, d, cfg)
-    offered = content.eligible_sentences(parsed, lk["min_sentence_gap"], lk["max_total_links_per_paragraph"])
-    if n == 0 or not offered:
-        why = ("internal link budget already met by existing links" if n == 0 and
-               scoring.new_link_budget(d, cfg) == 0 else "no candidates or no eligible sentences")
+    cats = category_names(draft["category_ids"], cat_names, row.wp_categories)
+    a = pipeline.analyse(draft["raw"], draft["title"], cats, row.primary_keyword, row.post_id, inventory, cfg)
+    parsed, d, n, existing_note = a.parsed, a.draft, a.n, a.existing_note
+    if a.skip_reason:
+        why = a.skip_reason
         control.log_post(row.post_id, d.title, ", ".join(cats), "no_links", 0, dry_run,
                          f"{why} | {existing_note}")
         return {"post_id": row.post_id, "status": "no_links", "reason": why}
 
-    prompt, ids = build_prompt(d.title, n, shortlist, offered)
-    proposed = llm.propose(prompt)
-    checked = validate.check(proposed, ids, parsed, n, cfg.settings, offered)
-
-    if checked.accepted:
-        new_raw = content.apply_edits(parsed, checked.accepted)
-        if not dry_run:
-            wp.update_draft(row.post_id, new_raw)
+    res = pipeline.propose(a, llm, cfg)
+    checked = res.checked
+    if res.new_raw and not dry_run:
+        wp.update_draft(row.post_id, res.new_raw)
 
     run_at = _now()
     change_rows = [[row.post_id, d.title, parsed.sentences[a["sentence_id"]].block, a["url"],

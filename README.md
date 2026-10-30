@@ -110,7 +110,9 @@ formatting outside the edited sentence are untouched.
 
 ```
 linker/
-  main.py        run orchestration, CLI (--post-id, --dry-run)
+  main.py        scheduled run orchestration, CLI (--post-id, --dry-run)
+  pipeline.py    one-article pipeline shared by the runner and the preview
+  preview.py     safe preview on any post -> before/after HTML report
   sheets.py      MasterSheet reader (read-only) + control-sheet log
   wordpress.py   REST client: inventory reads, draft-only writes
   inventory.py   link targets + inbound-link counts
@@ -123,10 +125,14 @@ config/          settings.yaml (weights, quotas), program_pages.csv (program pag
 tests/           offline tests incl. an end-to-end run with fake WordPress + LLM
 .github/workflows/
   link.yml       scheduled + manual run
+  preview.yml    preview on one post (needs only GEMINI_API_KEY)
   tests.yml      CI
 ```
 
 ## Running
+
+**Try it on one post first:** Actions → *Preview on a post*, or `python -m linker.preview --post <url>`.
+It writes a before/after report (`preview.html`) and changes nothing.
 
 See **[SETUP.md](SETUP.md)** for secrets and the first dry run. Locally:
 

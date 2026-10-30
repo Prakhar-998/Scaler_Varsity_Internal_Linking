@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 from bs4 import BeautifulSoup
 
+from html.entities import codepoint2name
 from urllib.parse import urljoin
 
 from .text import norm_url, split_sentences
@@ -162,31 +163,48 @@ def eligible_sentences(parsed: ParsedDraft, gap: int, max_total_per_para: int) -
     return out
 
 
+def _char_pattern(c: str) -> str:
+    """Regex for one character as it may appear in WordPress HTML: literally or as an entity
+    (WordPress turns quotes, dashes and ellipses into &#8217; &#8211; &hellip; etc.)."""
+    if c.isspace():
+        return r"(?:\s|&nbsp;|&#160;|&#xa0;|\xa0)+"
+    if c.isalnum():
+        return re.escape(c)
+    opts = [re.escape(c), f"&#0*{ord(c)};", f"&#[xX]0*{ord(c):x};"]
+    name = codepoint2name.get(ord(c))
+    if name:
+        opts.append(f"&{name};")
+    return "(?:" + "|".join(opts) + ")"
+
+
 def _locate(sentence: str, inner: str) -> str | None:
-    """Return the sentence as it is written in the paragraph HTML, if it appears there as plain
-    text (no tags inside it). Tries the literal text, then the HTML-escaped form."""
+    """Return the sentence exactly as it is written in the paragraph HTML, if it appears there as
+    plain text (no tags inside it). Handles HTML entities and odd whitespace."""
     for form in (sentence, html.escape(sentence, quote=False)):
         if form in inner:
             return form
-    return None
+    pattern = "".join(_char_pattern(c) for c in re.sub(r"\s+", " ", sentence))
+    m = re.search(pattern, inner)
+    return m.group(0) if m else None
 
 
-def link_html(rewritten: str, anchor: str, url: str) -> str:
+def link_html(rewritten: str, anchor: str, url: str, attrs: str = "") -> str:
     esc = html.escape(rewritten, quote=False)
     esc_anchor = html.escape(anchor, quote=False)
     i = esc.find(esc_anchor)
     if i < 0:
         raise ValueError("anchor not in rewritten sentence")
-    a = f'<a href="{html.escape(url, quote=True)}">{esc_anchor}</a>'
+    a = f'<a href="{html.escape(url, quote=True)}"{(" " + attrs) if attrs else ""}>{esc_anchor}</a>'
     return esc[:i] + a + esc[i + len(esc_anchor):]
 
 
-def apply_edits(parsed: ParsedDraft, edits: list[dict]) -> str:
-    """edits: [{sentence_id, anchor, rewritten, url}] that already passed validation."""
+def apply_edits(parsed: ParsedDraft, edits: list[dict], attrs: str = "") -> str:
+    """edits: [{sentence_id, anchor, rewritten, url}] that already passed validation.
+    `attrs` adds attributes to the new <a> tags (the preview uses it to highlight them)."""
     new_inner = {i: p.inner for i, p in parsed.paragraphs.items()}
     for e in edits:
         s = parsed.sentences[e["sentence_id"]]
-        replacement = link_html(e["rewritten"], e["anchor"], e["url"])
+        replacement = link_html(e["rewritten"], e["anchor"], e["url"], attrs)
         if s.html not in new_inner[s.block]:
             raise ValueError(f"sentence {s.id} no longer found in its paragraph")
         new_inner[s.block] = new_inner[s.block].replace(s.html, replacement, 1)

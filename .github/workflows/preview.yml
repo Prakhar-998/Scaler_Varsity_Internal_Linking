@@ -1,0 +1,56 @@
+name: Preview on a post
+
+# Runs the linker on ONE post and produces a before/after report. Changes nothing anywhere.
+# Needs only the GEMINI_API_KEY secret (none at all with "plan only").
+
+on:
+  workflow_dispatch:
+    inputs:
+      post:
+        description: "Post URL, slug or ID (an ID of a draft needs the WordPress secrets)"
+        required: true
+      keyword:
+        description: "Primary keyword of the post (optional)"
+        required: false
+      plan_only:
+        description: "Plan only: show targets and scores, skip Gemini"
+        type: boolean
+        default: false
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Run preview
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          # Optional: used if present, ignored if not.
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          MASTERSHEET_ID: ${{ secrets.MASTERSHEET_ID }}
+          POST: ${{ inputs.post }}
+          KEYWORD: ${{ inputs.keyword }}
+        run: |
+          args=(--post "$POST")
+          [ -n "$KEYWORD" ] && args+=(--keyword "$KEYWORD")
+          [ "${{ inputs.plan_only }}" = "true" ] && args+=(--plan-only)
+          python -m linker.preview "${args[@]}"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linker-preview
+          path: out/
+          if-no-files-found: ignore
+          retention-days: 14

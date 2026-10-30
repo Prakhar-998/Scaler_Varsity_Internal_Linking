@@ -7,6 +7,7 @@ immediately before every write, so a post published in the meantime is never tou
 from __future__ import annotations
 
 import html
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 
 import requests
@@ -28,10 +29,14 @@ class NotEditable(Exception):
 
 
 class WordPress:
-    def __init__(self, base_url: str, username: str, app_password: str, editable_statuses: list[str]):
+    def __init__(self, base_url: str, username: str | None, app_password: str | None,
+                 editable_statuses: list[str]):
+        """username/app_password may be None for read-only access to published content."""
         self.api = base_url.rstrip("/") + "/wp-json/wp/v2"
         self.s = requests.Session()
-        self.s.auth = (username, app_password.replace(" ", ""))
+        self.authed = bool(username and app_password)
+        if self.authed:
+            self.s.auth = (username, app_password.replace(" ", ""))
         self.s.headers["User-Agent"] = "varsity-internal-linker/1.0"
         self.editable = set(editable_statuses)
 
@@ -74,6 +79,27 @@ class WordPress:
             "title": html.unescape(p["title"]["raw"] or p["title"].get("rendered", "")),
             "category_ids": p.get("categories", []),
             "raw": p["content"]["raw"],
+        }
+
+    def published_post(self, url_or_id) -> dict:
+        """A published post by URL, slug or ID, readable without credentials. Returns the same shape
+        as get_draft, using the rendered HTML (WordPress may encode quotes as entities)."""
+        fields = "id,status,link,title,categories,content"
+        if str(url_or_id).isdigit():
+            p = self._get(f"/posts/{url_or_id}", _fields=fields).json()
+        else:
+            slug = urlsplit(str(url_or_id)).path.rstrip("/").rsplit("/", 1)[-1] or str(url_or_id)
+            found = self._get("/posts", slug=slug, _fields=fields).json()
+            if not found:
+                raise SystemExit(f"No published post found with slug '{slug}'")
+            p = found[0]
+        return {
+            "id": p["id"],
+            "status": p["status"],
+            "url": p["link"],
+            "title": html.unescape(p["title"]["rendered"]),
+            "category_ids": p.get("categories", []),
+            "raw": p["content"]["rendered"],
         }
 
     def update_draft(self, post_id: int, new_raw: str) -> None:

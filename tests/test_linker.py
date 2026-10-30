@@ -1,3 +1,4 @@
+import json
 import re
 
 import pytest
@@ -308,3 +309,68 @@ def test_inserted_link_uses_exact_program_url():
     wp, ctl, llm = FakeWP(DRAFT_RAW), FakeControl(), FakeLLM()
     process_post(Row(), wp, inv, {7: "Forward Deployed Engineering"}, llm, c, ctl, dry_run=False)
     assert 'href="https://www.interviewbit.com/varsity/iit-delhi/ai-engineering"' in wp.updated
+
+
+# ---------- preview tool ----------
+
+RENDERED = """<p>Intro paragraph that the linker always leaves alone for safety.</p>
+<h2>Why it matters</h2>
+<p>Every production AI system needs a way to prove it works before customers rely on it. Teams usually start with retrieval augmented generation because it&#8217;s cheaper than training a model.</p>
+<p>Prompt injection is one of the risks that forward deployed engineers have to defend against &#8211; on every customer project they take on.</p>
+<p>Many engineers build these skills through structured training rather than on the job alone, because the feedback loop is faster.</p>
+<script>alert(1)</script>"""
+
+
+def test_locate_handles_wordpress_entities():
+    p = content.parse(RENDERED, SETTINGS_SKIP)
+    texts = {s.text: s for s in p.sentences.values()}
+    s = next(v for k, v in texts.items() if k.startswith("Teams usually start"))
+    assert "&#8217;" in s.html                          # matched the entity form in the HTML
+    new = content.apply_edits(p, [{"sentence_id": s.id, "anchor": "retrieval augmented generation",
+                                   "rewritten": s.text, "url": "https://x/rag/"}])
+    assert '<a href="https://x/rag/">retrieval augmented generation</a>' in new
+
+
+class FakePublicWP:
+    authed = False
+
+    def __init__(self, *a, **k):
+        pass
+
+    def published_post(self, ref):
+        return {"id": 77, "status": "publish", "url": BASE + "llm-evals-for-fdes/", "title": "LLM Evals for FDEs",
+                "category_ids": [7], "raw": RENDERED}
+
+    def categories(self):
+        return {7: "Forward Deployed Engineering"}
+
+    def published_posts(self):
+        return []
+
+
+def test_preview_end_to_end(tmp_path, monkeypatch):
+    from linker import preview, inventory as inv_mod
+    monkeypatch.setattr(preview, "WordPress", FakePublicWP)
+    monkeypatch.setattr(preview, "build_inventory", lambda *a, **k: inventory())
+    monkeypatch.setenv("GEMINI_API_KEY", "test")
+    import linker.llm as llm_mod
+    monkeypatch.setattr(llm_mod, "Gemini", lambda *a, **k: FakeLLM())
+    for k in ("GOOGLE_SERVICE_ACCOUNT_JSON", "MASTERSHEET_ID", "WP_USERNAME", "WP_APP_PASSWORD"):
+        monkeypatch.delenv(k, raising=False)
+
+    preview.main(["--post", BASE + "llm-evals-for-fdes/", "--keyword", "llm evaluation", "--out", str(tmp_path)])
+    report = json.loads((tmp_path / "preview.json").read_text())
+    page = (tmp_path / "preview.html").read_text()
+    assert len(report["accepted"]) == 2
+    assert 'class="ln-new"' in page and "<script>" not in page
+    assert report["existing_internal"] == 0
+
+
+def test_preview_plan_only_needs_no_key(tmp_path, monkeypatch):
+    from linker import preview
+    monkeypatch.setattr(preview, "WordPress", FakePublicWP)
+    monkeypatch.setattr(preview, "build_inventory", lambda *a, **k: inventory())
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    preview.main(["--post", "llm-evals-for-fdes", "--plan-only", "--out", str(tmp_path)])
+    report = json.loads((tmp_path / "preview.json").read_text())
+    assert report["new_links_planned"] >= 1 and report["accepted"] == []

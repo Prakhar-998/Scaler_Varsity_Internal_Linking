@@ -71,7 +71,30 @@ site header and footer. To add one, add a row; to pause one, set `active` to `no
 `categories` must match WordPress category names exactly. This sets which blog categories link to it
 most.
 
-## 5. First runs (dry run first)
+## 5. Test on any post first (no setup beyond the Gemini key)
+
+The preview runs the full pipeline on one post and changes nothing anywhere.
+
+**In GitHub:** Actions → **Preview on a post** → Run workflow → paste a published post URL
+(e.g. `https://www.interviewbit.com/varsity/blog/dmaic-methodology/`) → Run. When it finishes, the run
+page shows a summary table; download the **linker-preview** artifact and open `preview.html` for
+the full before/after view with new links highlighted. Tick *Plan only* to see targets and scores
+without calling Gemini.
+
+**On your Mac:**
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+export GEMINI_API_KEY=...            # not needed with --plan-only
+python -m linker.preview --post https://www.interviewbit.com/varsity/blog/dmaic-methodology/
+open out/preview.html
+```
+
+A published post is a fine test subject, but its existing links count toward the budget, so it may
+get fewer new links than a fresh draft. To preview a draft, pass its post ID and set `WP_USERNAME` /
+`WP_APP_PASSWORD`.
+
+## 6. First real runs (dry run first)
 
 1. **Actions → Internal linker → Run workflow**, leave *Dry run* ticked, and optionally enter one
    post ID (the number in the MasterSheet's Draft Link, `post.php?post=1940`).
