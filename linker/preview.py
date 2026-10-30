@@ -40,7 +40,14 @@ def _load_sheet_rows(cfg):
     return rows
 
 
+def _post_ref(ref: str) -> str:
+    """Accept a post ID, a live URL/slug, or a WP edit link (…/post.php?post=1573&action=edit)."""
+    m = re.search(r"[?&]post=(\d+)", ref) or re.search(r"[?&]p=(\d+)", ref)
+    return m.group(1) if m else ref.strip()
+
+
 def _fetch_post(wp: WordPress, ref: str) -> dict:
+    ref = _post_ref(ref)
     if ref.isdigit() and wp.authed:
         d = wp.get_draft(int(ref))
         d.setdefault("url", "")

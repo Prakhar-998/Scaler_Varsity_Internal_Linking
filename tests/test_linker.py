@@ -626,3 +626,12 @@ def test_case_insensitive_anchor_keeps_original():
                   target_title="RLHF Explained", kws=("rlhf",), common=())
     assert res.accepted and res.accepted[0]["rewritten"] == orig
     assert res.accepted[0]["anchor"] == "Alignment methods such as RLHF"
+
+
+def test_preview_accepts_edit_links_ids_and_urls():
+    from linker.preview import _post_ref
+    assert _post_ref("https://www.interviewbit.com/varsity/blog/wp-admin/post.php?post=1573") == "1573"
+    assert _post_ref("https://www.interviewbit.com/varsity/blog/wp-admin/post.php?post=1573&action=edit") == "1573"
+    assert _post_ref("https://www.interviewbit.com/varsity/blog/?p=1573") == "1573"
+    assert _post_ref(" 1573 ") == "1573"
+    assert _post_ref("https://www.interviewbit.com/varsity/blog/rlhf/") == "https://www.interviewbit.com/varsity/blog/rlhf/"

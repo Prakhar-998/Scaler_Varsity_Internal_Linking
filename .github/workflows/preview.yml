@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       post:
-        description: "Post URL, slug or ID (an ID of a draft needs the WordPress secrets)"
+        description: "Post URL, WP edit link or ID (drafts need the WordPress secrets)"
         required: true
       keyword:
         description: "Primary keyword of the post (optional)"
