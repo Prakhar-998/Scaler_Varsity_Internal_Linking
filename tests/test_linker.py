@@ -374,3 +374,39 @@ def test_preview_plan_only_needs_no_key(tmp_path, monkeypatch):
     preview.main(["--post", "llm-evals-for-fdes", "--plan-only", "--out", str(tmp_path)])
     report = json.loads((tmp_path / "preview.json").read_text())
     assert report["new_links_planned"] >= 1 and report["accepted"] == []
+
+
+# ---------- WordPress fetching resilience ----------
+
+class _Resp:
+    def __init__(self, body, status=200, pages=1):
+        self.text, self.status_code = body, status
+        self.content = body.encode()
+        self.headers = {"X-WP-TotalPages": str(pages), "content-type": "application/json"}
+
+    def json(self):
+        return json.loads(self.text)
+
+    def raise_for_status(self):
+        import requests
+        if self.status_code >= 400:
+            raise requests.HTTPError(str(self.status_code))
+
+
+def test_published_posts_survives_empty_responses(monkeypatch):
+    from linker import wordpress
+    monkeypatch.setattr(wordpress.time, "sleep", lambda s: None)
+    meta = json.dumps([{"id": 1, "link": BASE + "a", "title": {"rendered": "A &#8211; B"}, "categories": [7]}])
+    calls = {"meta": 0}
+
+    def fake_get(url, params=None, timeout=None):
+        if "content" in params["_fields"]:
+            return _Resp("")                                  # article bodies always fail
+        calls["meta"] += 1
+        return _Resp("" if calls["meta"] == 1 else meta)      # first try empty, then fine
+
+    wp = wordpress.WordPress(BASE, None, None, ["draft"])
+    monkeypatch.setattr(wp.s, "get", fake_get)
+    posts = wp.published_posts()
+    assert [p.title for p in posts] == ["A – B"] and posts[0].content_html == ""
+    assert calls["meta"] == 2
