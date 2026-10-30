@@ -2,6 +2,7 @@
 variants and current inbound-link count. Rebuilt from live sources on every run."""
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -31,10 +32,29 @@ class Target:
         return self.href or self.url
 
 
+# Words that end the "topic" part of a blog title: "Pauli Gates Explained Simply ..." -> "pauli gates".
+_TITLE_CUT = {"explained", "explain", "simply", "step", "made", "guide", "tutorial", "in", "for",
+              "with", "better", "beginner", "beginners", "basics", "overview", "everything",
+              "why", "how", "what", "when", "you", "your", "like", "-", "–", "—", "|"}
+_TITLE_LEAD = {"the", "a", "an", "inside", "understanding", "intro", "introduction", "to", "best", "top"}
+
+
 def _title_phrase(title: str) -> str | None:
-    """'LangGraph Explained: How ...' -> 'langgraph explained' style anchor, if short enough."""
-    head = title.split(":")[0].split("?")[0].strip()
-    return head.lower() if 1 <= len(head.split()) <= 6 else None
+    """Short topic phrase from a title, used as an anchor idea and for relevance matching.
+    'The Hadamard Gate Explained Better Than Your Textbook' -> 'hadamard gate'
+    'Best Quantum Computing Certifications in India (2026): ...' -> 'best quantum computing certifications'
+    'Qubit vs Bit: The Real Difference ...' -> 'qubit vs bit'"""
+    head = re.split(r"[:?(]", title, maxsplit=1)[0]
+    words = [w.strip(",.!'’\"") for w in head.split()]
+    while words and words[0].lower() in _TITLE_LEAD:
+        words.pop(0)
+    out = []
+    for w in words:
+        if w.lower() in _TITLE_CUT:
+            break
+        out.append(w)
+    phrase = " ".join(out).strip().lower()
+    return phrase if 1 <= len(phrase.split()) <= 6 else None
 
 
 def _dedupe(items):

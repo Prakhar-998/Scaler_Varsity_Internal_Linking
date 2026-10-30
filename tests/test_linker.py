@@ -534,3 +534,42 @@ def test_repair_round_fills_rejected_slots():
     res = pipeline.propose(a, TwoPassLLM(), c)
     assert TwoPassLLM.calls == 2 and len(res.checked.accepted) == 2
     assert any("filler" in r for _, r in res.checked.rejected)
+
+
+# ---------- cases from the second live preview ----------
+
+def test_title_phrases_make_good_anchor_ideas():
+    from linker.inventory import _title_phrase as t
+    assert t("The Hadamard Gate Explained Better Than Your Textbook") == "hadamard gate"
+    assert t("Best Quantum Computing Certifications in India (2026): Which Ones Matter") == "quantum computing certifications"
+    assert t("Qubit vs Bit: The Real Difference Between Quantum and Classical Information") == "qubit vs bit"
+
+
+def _single(anchor, original, rewritten, accepted_anchor=None, target_title="Superposition in Quantum Computing",
+            kws=("superposition in quantum computing",), common=("quantum", "computing")):
+    from linker.content import ParsedDraft, Sentence
+    s = Sentence("p5.s0", 5, original, original, 20)
+    parsed = ParsedDraft("", {}, {"p5.s0": s}, 1000, [], set(), {})
+    ids = {"T1": scoring.Candidate(Target("https://x/t1/", target_title, "blog", ["Q"], list(kws)), 1, 1, "same", None)}
+    edits = []
+    if accepted_anchor:
+        s2 = Sentence("p9.s0", 9, f"Many teams study {accepted_anchor} early on in their journey.", "", 40)
+        parsed.sentences["p9.s0"] = s2
+        ids["T2"] = scoring.Candidate(Target("https://x/t2/", "Other", "blog", ["Q"], [accepted_anchor]), 1, 1, "same", None)
+        edits.append({"sentence_id": "p9.s0", "target_id": "T2", "anchor": accepted_anchor, "rewritten": s2.text})
+    edits.append({"sentence_id": "p5.s0", "target_id": "T1", "anchor": anchor, "rewritten": rewritten})
+    return validate.check(edits, ids, parsed, 5, cfg().settings, None, "Quantum Phase Estimation", set(common))
+
+
+def test_forced_topic_insertion_rejected():
+    orig = "Quantum phase describes which way a state's complex amplitude points, not how big it is."
+    res = _single("superposition in quantum computing", orig,
+                  "Central to superposition in quantum computing, quantum phase describes which way a state's complex amplitude points, not how big it is.")
+    assert res.rejected and "forced insertion" in res.rejected[0][1]
+
+
+def test_common_words_dont_make_anchors_similar():
+    orig = "The practical value of quantum computing applications depends on the problem and the hardware."
+    res = _single("quantum computing applications", orig, orig, accepted_anchor="superposition in quantum computing",
+                  target_title="Quantum Computing Applications", kws=("quantum computing applications",))
+    assert len(res.accepted) == 2, res.rejected

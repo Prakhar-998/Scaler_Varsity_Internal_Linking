@@ -50,6 +50,13 @@ def anchor_problem(anchor: str, target, own_text: str) -> str | None:
     return None
 
 
+def _share_in(anchor: str, original: str) -> float:
+    """Share of the anchor's content words that the writer's sentence already contained. A blog
+    link should sit on what the sentence is already about, not on a topic the LLM bolted on."""
+    a = content_tokens(anchor)
+    return len(a & content_tokens(original)) / len(a) if a else 0.0
+
+
 def _overlap(a: set, b: set) -> float:
     return len(a & b) / min(len(a), len(b)) if a and b else 0.0
 
@@ -66,6 +73,7 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
     gap = lk["min_sentence_gap"]
     offered = parsed.sentences if offered is None else offered
     existing_anchors = {e.anchor.strip().lower() for e in parsed.existing if e.anchor}
+    common = common_words or set()
 
     accepted, rejected = [], []
     used_targets, used_sentences, para_new = set(), set(), {}
@@ -101,9 +109,12 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
             reason = "generic anchor"
         elif (bad := anchor_problem(anchor, cand.target, own_text)):
             reason = bad
-        elif any(_overlap(content_tokens(anchor), content_tokens(a["anchor"])) >= 0.6 for a in accepted):
+        elif any(_overlap(content_tokens(anchor) - common, content_tokens(a["anchor"]) - common) >= 0.6
+                 for a in accepted):
             reason = "anchor too similar to another new link"
-        elif any((content_tokens(anchor) & content_tokens(a["anchor"])) - (common_words or set())
+        elif cand.target.type != "program" and _share_in(anchor, s.text) < 0.5:
+            reason = "anchor topic isn't in the original sentence (forced insertion)"
+        elif any((content_tokens(anchor) & content_tokens(a["anchor"])) - common
                  for a in accepted):
             reason = "anchor repeats a term already linked in this article"
         elif rewritten.count(anchor) != 1:
