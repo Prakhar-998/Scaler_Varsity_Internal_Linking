@@ -54,7 +54,7 @@ def build_prompt(title: str, n: int, shortlist: list[Candidate], sentences: dict
 
 
 class Gemini:
-    def __init__(self, api_key: str, model: str, temperature: float = 0.2):
+    def __init__(self, api_key: str, model: str, temperature: float | None = None):
         from google import genai  # imported lazily so offline tests don't need the SDK configured
         self._genai = genai
         from google.genai import types
@@ -69,8 +69,8 @@ class Gemini:
             model=self.model,
             contents=prompt,
             config=types.GenerateContentConfig(
-                temperature=self.temperature,
                 response_mime_type="application/json",
+                **({} if self.temperature is None else {"temperature": self.temperature}),
             ),
         )
         data = json.loads(resp.text)

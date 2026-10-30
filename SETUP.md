@@ -12,7 +12,7 @@ Nothing secret is ever committed. Six secrets, two variables, about 20 minutes.
 | `WP_APP_PASSWORD` | Secret | WordPress Application Password |
 | `GEMINI_API_KEY` | Secret | Gemini API key |
 | `DRY_RUN` | Variable | `true` (default) logs proposals only; `false` edits drafts |
-| `GEMINI_MODEL` | Variable | Optional model override, e.g. `gemini-2.5-flash` |
+| `GEMINI_MODEL` | Variable | Optional model override, e.g. `gemini-3.8-flash` (the default) |
 
 A sheet ID is the long string in its URL: `docs.google.com/spreadsheets/d/<THIS PART>/edit`.
 
