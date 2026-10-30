@@ -3,6 +3,7 @@ It sees a short, pre-scored shortlist (never the whole site) and returns structu
 from __future__ import annotations
 
 import json
+import time
 
 from .scoring import Candidate
 
@@ -54,24 +55,57 @@ def build_prompt(title: str, n: int, shortlist: list[Candidate], sentences: dict
 
 
 class Gemini:
-    def __init__(self, api_key: str, model: str, temperature: float | None = None):
+    RETRYABLE = {429, 500, 502, 503, 504}
+
+    def __init__(self, api_key: str, model: str, temperature: float | None = None,
+                 thinking_level: str | None = "low", timeout_s: int = 300, retries: int = 2):
         from google import genai  # imported lazily so offline tests don't need the SDK configured
-        self._genai = genai
         from google.genai import types
-        # Fail after 2 minutes instead of hanging the run if the API stalls.
-        self.client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=120_000))
+        self._types = types
+        # The SDK also sends this as the server-side deadline, so it must be generous.
+        self.client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=timeout_s * 1000))
         self.model = model
         self.temperature = temperature
+        self.thinking_level = thinking_level
+        self.retries = retries
+
+    def _config(self):
+        t = self._types
+        kw = {"response_mime_type": "application/json"}
+        if self.temperature is not None:
+            kw["temperature"] = self.temperature
+        if self.thinking_level:
+            # Light reasoning is plenty for "pick a sentence and add a phrase", and much faster.
+            kw["thinking_config"] = t.ThinkingConfig(thinking_level=self.thinking_level)
+        return t.GenerateContentConfig(**kw)
 
     def propose(self, prompt: str) -> list[dict]:
-        from google.genai import types
-        resp = self.client.models.generate_content(
-            model=self.model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                **({} if self.temperature is None else {"temperature": self.temperature}),
-            ),
-        )
+        from google.genai import errors
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                resp = self.client.models.generate_content(model=self.model, contents=prompt,
+                                                           config=self._config())
+                break
+            except errors.APIError as e:
+                code = getattr(e, "code", None)
+                if code == 400 and self.thinking_level and "think" in str(e).lower():
+                    print(f"[llm] model rejected thinking_level; retrying without it", flush=True)
+                    self.thinking_level = None
+                    continue
+                if code in self.RETRYABLE and attempt <= self.retries:
+                    wait = 15 * attempt
+                    print(f"[llm] {code} from Gemini; retry {attempt}/{self.retries} in {wait}s", flush=True)
+                    time.sleep(wait)
+                    continue
+                raise
         data = json.loads(resp.text)
         return data.get("edits", []) if isinstance(data, dict) else []
+
+
+def gemini_from_config(cfg, secrets: dict) -> Gemini:
+    llm = cfg.get("llm")
+    model = secrets.get("GEMINI_MODEL") or llm["default_model"]
+    return Gemini(secrets["GEMINI_API_KEY"], model, llm.get("temperature"),
+                  thinking_level=llm.get("thinking_level"), timeout_s=llm.get("timeout_seconds", 300))

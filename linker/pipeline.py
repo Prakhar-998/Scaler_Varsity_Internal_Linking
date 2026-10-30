@@ -9,6 +9,7 @@ from . import content, scoring, validate
 from .config import Config
 from .inventory import Target
 from .llm import build_prompt
+from .text import contains_phrase, content_tokens, tokens
 
 
 @dataclass
@@ -69,9 +70,37 @@ def analyse(raw: str, title: str, categories: list[str], primary_keyword: str, p
                     scoring.target_link_count(d.word_count, cfg), _cfg=cfg)
 
 
+def select_sentences(offered: dict, shortlist: list, limit: int) -> dict:
+    """Keep the prompt small: the sentences most likely to carry one of the shortlisted links,
+    plus a spread of others (program links often fit a general sentence), in article order."""
+    if len(offered) <= limit:
+        return offered
+    topics = []
+    for c in shortlist:
+        topics.append((content_tokens(" ".join(c.target.keywords + [c.target.title])),
+                       [tokens(k) for k in c.target.keywords]))
+    scored = []
+    for sid, s in offered.items():
+        st, toks = content_tokens(s.text), tokens(s.text)
+        best = 0.0
+        for topic, phrases in topics:
+            if any(contains_phrase(toks, ph) for ph in phrases if ph):
+                best = max(best, 2.0)
+            elif topic:
+                best = max(best, len(st & topic) / len(topic))
+        scored.append((best, sid))
+    top_n = max(1, int(limit * 0.75))
+    keep = {sid for _, sid in sorted(scored, key=lambda x: -x[0])[:top_n]}
+    rest = [sid for sid in offered if sid not in keep]
+    step = max(1, len(rest) // max(1, limit - len(keep)))
+    keep.update(rest[::step][: limit - len(keep)])
+    return {sid: s for sid, s in offered.items() if sid in keep}
+
+
 def propose(a: Analysis, llm, cfg: Config, link_attrs: str = "") -> Result:
     """Ask the LLM for edits, validate them, and build the new post content (not saved anywhere)."""
-    prompt, ids = build_prompt(a.draft.title, a.n, a.shortlist, a.offered)
-    checked = validate.check(llm.propose(prompt), ids, a.parsed, a.n, cfg.settings, a.offered)
+    offered = select_sentences(a.offered, a.shortlist, cfg.get("llm", "max_sentences_for_llm", default=40))
+    prompt, ids = build_prompt(a.draft.title, a.n, a.shortlist, offered)
+    checked = validate.check(llm.propose(prompt), ids, a.parsed, a.n, cfg.settings, offered)
     new_raw = content.apply_edits(a.parsed, checked.accepted, link_attrs) if checked.accepted else None
     return Result(checked, new_raw, prompt)

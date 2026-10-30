@@ -174,13 +174,18 @@ def main(argv=None):
     if a.skip_reason:
         notes.append(f"No links planned: {a.skip_reason}")
     elif not args.plan_only:
-        from .llm import Gemini
+        from . import llm as llm_mod
         model = sec.get("GEMINI_MODEL") or cfg.get("llm", "default_model")
-        print(f"[preview] asking {model} for {a.n} links over {len(a.offered)} eligible sentences "
-              "(can take a minute)...", flush=True)
-        res = pipeline.propose(a, Gemini(sec["GEMINI_API_KEY"], model, cfg.get("llm", "temperature")),
-                               cfg, link_attrs=NEW_LINK_ATTRS)
-        notes += res.checked.notes
+        print(f"[preview] asking {model} for {a.n} links (sentences sent: up to "
+              f"{cfg.get('llm', 'max_sentences_for_llm', default=40)} of {len(a.offered)} eligible; "
+              "can take a minute)...", flush=True)
+        try:
+            res = pipeline.propose(a, llm_mod.gemini_from_config(cfg, sec), cfg, link_attrs=NEW_LINK_ATTRS)
+            notes += res.checked.notes
+        except Exception as e:  # still write the report with the plan, so the run isn't wasted
+            failed = f"Gemini call failed: {type(e).__name__}: {str(e)[:300]}"
+            print(f"[preview] {failed}", flush=True)
+            notes.append(failed)
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -210,6 +215,7 @@ def main(argv=None):
         for e, r in res.checked.rejected:
             print(f"  - rejected ({r}): {e.get('anchor', '')}")
     print(f"[preview] report: {out / 'preview.html'}")
+    llm_failed = any(n.startswith("Gemini call failed") for n in notes)
 
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
@@ -220,7 +226,11 @@ def main(argv=None):
                 fh.write("| Anchor | Target | Rewritten sentence |\n|---|---|---|\n")
                 for e in res.checked.accepted:
                     fh.write(f"| {e['anchor']} | {e['url']} | {e['rewritten'].replace('|', '/')} |\n")
+            if llm_failed:
+                fh.write(f"\n**{[n for n in notes if n.startswith('Gemini call failed')][0]}**\n")
             fh.write("\nDownload the `linker-preview` artifact below for the full before/after report.\n")
+    if llm_failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

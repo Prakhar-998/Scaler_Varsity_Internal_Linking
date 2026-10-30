@@ -17,7 +17,7 @@ from pathlib import Path
 from . import pipeline
 from .config import load_config
 from .inventory import build_inventory
-from .llm import Gemini
+from .llm import gemini_from_config
 from .sheets import ControlSheet, MasterSheet, _now
 from .wordpress import NotEditable, WordPress
 
@@ -113,8 +113,7 @@ def main(argv=None):
     print(f"[run] inventory: {len(inventory)} targets "
           f"({sum(t.type == 'program' for t in inventory)} program pages)")
 
-    model = sec.get("GEMINI_MODEL") or cfg.get("llm", "default_model")
-    llm = Gemini(sec["GEMINI_API_KEY"], model, cfg.get("llm", "temperature"))
+    llm = gemini_from_config(cfg, sec)
 
     OUT.mkdir(exist_ok=True)
     report = []

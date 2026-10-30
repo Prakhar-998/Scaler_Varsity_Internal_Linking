@@ -410,3 +410,40 @@ def test_published_posts_survives_empty_responses(monkeypatch):
     posts = wp.published_posts()
     assert [p.title for p in posts] == ["A – B"] and posts[0].content_html == ""
     assert calls["meta"] == 2
+
+
+# ---------- keeping the LLM call small and resilient ----------
+
+def test_select_sentences_caps_and_prefers_relevant():
+    from linker.pipeline import select_sentences
+    from linker.content import Sentence
+    offered = {f"p{i}.s0": Sentence(f"p{i}.s0", i, f"Filler sentence number {i} about nothing in particular here.", "", i)
+               for i in range(100)}
+    offered["p50.s0"] = Sentence("p50.s0", 50, "Prompt injection is a real risk for every deployed system.", "", 50)
+    c = cfg()
+    p = content.parse(DRAFT_RAW, SETTINGS_SKIP)
+    _, shortlist = scoring.plan(scoring.score_targets(inventory(), _draft(p), c), _draft(p), c)
+    picked = select_sentences(offered, shortlist, 40)
+    assert len(picked) == 40 and "p50.s0" in picked
+    assert list(picked) == sorted(picked, key=lambda k: int(k[1:].split(".")[0]))   # article order kept
+
+
+def test_gemini_retries_on_504(monkeypatch):
+    from google.genai import errors
+    import linker.llm as llm_mod
+    monkeypatch.setattr(llm_mod.time, "sleep", lambda s: None)
+    g = llm_mod.Gemini("k", "gemini-3.8-flash")
+    calls = {"n": 0}
+
+    class R:
+        text = '{"edits": [{"sentence_id": "p1.s0"}]}'
+
+    def fake(**kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise errors.ServerError(504, {"error": {"code": 504, "message": "Deadline expired", "status": "DEADLINE_EXCEEDED"}})
+        assert kw["config"].thinking_config.thinking_level.value == "LOW"
+        return R()
+
+    monkeypatch.setattr(g.client.models, "generate_content", fake)
+    assert g.propose("x") == [{"sentence_id": "p1.s0"}] and calls["n"] == 2
