@@ -53,11 +53,16 @@ def anchor_problem(anchor: str, target, own_text: str) -> str | None:
     return None
 
 
+def _word_count(anchor: str) -> int:
+    """Hyphenated terms count per part: "prompt-injection" is a 2-word anchor, as the writer wrote it."""
+    return len([w for w in re.split(r"[\s\-–]+", anchor) if w])
+
+
 def _ok_single_word(anchor: str, target, common: set) -> bool:
     """One-word anchors are fine for distinctive terms that ARE the target's topic:
     "RLHF", "Quantization", "Perplexity" - but not "AI", "models" or "data"."""
     words = anchor.split()
-    if len(words) != 1:
+    if len(words) != 1 or _word_count(anchor) != 1:
         return False
     w = words[0].strip(".,;:()'\"’")
     tok = content_tokens(w)
@@ -136,7 +141,7 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
             reason = "paragraph link cap reached"
         elif anchor.lower() in existing_anchors:
             reason = "anchor duplicates an existing link's anchor"
-        elif not (2 <= len(anchor.split()) <= 8 or _ok_single_word(anchor, cand.target, common)):
+        elif not (2 <= _word_count(anchor) <= 8 or _ok_single_word(anchor, cand.target, common)):
             reason = "anchor length out of range"
         elif anchor.lower() in GENERIC_ANCHORS:
             reason = "generic anchor"

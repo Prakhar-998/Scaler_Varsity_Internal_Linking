@@ -18,7 +18,7 @@ from . import pipeline
 from .config import load_config
 from .inventory import build_inventory
 from .llm import gemini_from_config
-from .sheets import ControlSheet, MasterSheet, _now
+from .sheets import ControlSheet, MasterSheet, SheetRow, _now
 from .wordpress import NotEditable, WordPress
 
 OUT = Path("out")
@@ -101,6 +101,13 @@ def main(argv=None):
     control = ControlSheet(sec["GOOGLE_SERVICE_ACCOUNT_JSON"], sec["CONTROL_SHEET_ID"])
     rows = MasterSheet(sec["GOOGLE_SERVICE_ACCOUNT_JSON"], sec["MASTERSHEET_ID"], cfg.settings).rows()
     todo = ready_rows(rows, cfg.settings, control.done_post_ids(), args.post_id)
+    if args.post_id is not None and not todo:
+        # A post ID given by hand works even if it isn't in the MasterSheet (e.g. a test draft):
+        # no primary keyword, categories come from WordPress.
+        print(f"[run] post {args.post_id} isn't in the MasterSheet; running it on WordPress data alone")
+        todo = [SheetRow(tab="(manual)", topic=f"post {args.post_id}", primary_keyword="",
+                         content_status="", publishing_status="",
+                         draft_link=f"post.php?post={args.post_id}", live_link="", wp_categories=[])]
     todo = todo[: cfg.get("run", "max_posts_per_run")]
     print(f"[run] {len(rows)} sheet rows, {len(todo)} drafts to link")
     if not todo:

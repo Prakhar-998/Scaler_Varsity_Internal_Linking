@@ -635,3 +635,18 @@ def test_preview_accepts_edit_links_ids_and_urls():
     assert _post_ref("https://www.interviewbit.com/varsity/blog/?p=1573") == "1573"
     assert _post_ref(" 1573 ") == "1573"
     assert _post_ref("https://www.interviewbit.com/varsity/blog/rlhf/") == "https://www.interviewbit.com/varsity/blog/rlhf/"
+
+
+def test_hyphenated_anchor_counts_as_two_words():
+    from linker.validate import _word_count, _ok_single_word
+    assert _word_count("prompt-injection") == 2 and _word_count("RLHF") == 1
+    orig = "Agents are exposed to prompt-injection whenever they read untrusted web pages."
+    res = _single("prompt-injection", orig, orig, target_title="Prompt Injection Attacks",
+                  kws=("prompt injection",), common=())
+    assert res.accepted, res.rejected
+
+
+def test_manual_post_id_not_in_sheet_still_runs(monkeypatch):
+    from linker import main as m
+    rows = []
+    assert m.ready_rows(rows, cfg().settings, set(), 1573) == []
