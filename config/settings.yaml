@@ -59,6 +59,7 @@ llm:
   temperature: null                   # null = model default (Google recommends it for Gemini 3+)
   thinking_level: "low"               # low = fast; set null to let the model think as long as it likes
   timeout_seconds: 300
+  repair_rounds: 1                    # extra Gemini call to replace rejected links (0 = off)
   max_sentences_for_llm: 40           # only the most link-worthy sentences are sent, keeps calls fast
   max_rewrite_similarity_drop: 0.45  # reject rewrites that change more than this share of the sentence
 

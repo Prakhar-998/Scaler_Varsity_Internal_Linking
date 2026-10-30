@@ -81,7 +81,7 @@ def process_post(row, wp, inventory, cat_names, llm, cfg, control, dry_run) -> d
                      " | ".join(notes))
     return {
         "post_id": row.post_id, "title": d.title, "status": status, "planned": n,
-        "accepted": [{k: v for k, v in a.items() if k != "candidate"} for a in checked.accepted],
+        "accepted": [{k: v for k, v in a.items() if k not in ("candidate", "raw")} for a in checked.accepted],
         "rejected": [{"edit": e, "reason": r} for e, r in checked.rejected],
         "notes": checked.notes,
     }

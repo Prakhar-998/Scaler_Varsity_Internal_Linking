@@ -501,3 +501,36 @@ def test_gemini_falls_back_when_overloaded(monkeypatch):
     monkeypatch.setattr(g.client.models, "generate_content", fake)
     assert g.propose("x") == [] and g.used_model == "gemini-3.6-flash"
     assert seen == ["gemini-3.8-flash"] * 3 + ["gemini-3.6-flash"]
+
+
+def test_common_words_and_repeated_term_rule():
+    from linker.pipeline import common_words
+    inv = [Target(f"u{i}", f"Quantum Topic {i}", "blog", [], []) for i in range(10)] + \
+          [Target("h1", "Hadamard Gate", "blog", [], []), Target("h2", "Quantum Gates: From Hadamard to CNOT", "blog", [], [])]
+    cw = common_words(inv)
+    assert "quantum" in cw and "hadamard" not in cw
+
+
+def test_repair_round_fills_rejected_slots():
+    from linker import pipeline
+    c = cfg()
+    p = content.parse(DRAFT_RAW, SETTINGS_SKIP)
+
+    class TwoPassLLM(FakeLLM):
+        calls = 0
+
+        def propose(self, prompt):
+            TwoPassLLM.calls += 1
+            good = super().propose(prompt)
+            if TwoPassLLM.calls == 1:            # first pass: one good edit + one bad anchor
+                bad = dict(good[1], anchor="On the job", rewritten=good[1]["rewritten"].replace(
+                    "a structured forward deployed engineering programme", "structured training"))
+                return [good[0], bad]
+            assert "SECOND PASS" in prompt and "filler word" in prompt
+            return [good[1]]                     # second pass: the fixed edit
+
+    a = pipeline.analyse(DRAFT_RAW, "LLM Evals for FDEs", ["Forward Deployed Engineering"], "llm evaluation",
+                         99, inventory(), c)
+    res = pipeline.propose(a, TwoPassLLM(), c)
+    assert TwoPassLLM.calls == 2 and len(res.checked.accepted) == 2
+    assert any("filler" in r for _, r in res.checked.rejected)

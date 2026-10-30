@@ -21,6 +21,7 @@ class Analysis:
     shortlist: list[scoring.Candidate]
     offered: dict                            # sentences eligible for a new link
     budget: int                              # total internal-link budget for the article
+    common_words: set = field(default_factory=set)  # words in many titles ("quantum"): not distinctive
 
     @property
     def skip_reason(self) -> str | None:
@@ -67,7 +68,18 @@ def analyse(raw: str, title: str, categories: list[str], primary_keyword: str, p
     n, shortlist = scoring.plan(cands, d, cfg)
     offered = content.eligible_sentences(parsed, lk["min_sentence_gap"], lk["max_total_links_per_paragraph"])
     return Analysis(parsed, d, cands, n, shortlist, offered,
-                    scoring.target_link_count(d.word_count, cfg), _cfg=cfg)
+                    scoring.target_link_count(d.word_count, cfg), common_words(inventory), _cfg=cfg)
+
+
+def common_words(inventory: list[Target], share: float = 0.05, floor: int = 5) -> set[str]:
+    """Words that appear in many page titles (e.g. "quantum", "ai") are not distinctive enough to
+    treat two anchors as "the same term". Learned from the blog's own titles on every run."""
+    df: dict[str, int] = {}
+    for t in inventory:
+        for w in content_tokens(t.title):
+            df[w] = df.get(w, 0) + 1
+    cutoff = max(floor, int(share * len(inventory)))
+    return {w for w, n in df.items() if n >= cutoff}
 
 
 def select_sentences(offered: dict, shortlist: list, limit: int) -> dict:
@@ -98,10 +110,38 @@ def select_sentences(offered: dict, shortlist: list, limit: int) -> dict:
 
 
 def propose(a: Analysis, llm, cfg: Config, link_attrs: str = "") -> Result:
-    """Ask the LLM for edits, validate them, and build the new post content (not saved anywhere)."""
+    """Ask the LLM for edits, validate them, and build the new post content (not saved anywhere).
+    If some edits are rejected, one repair round asks for replacements, with the reasons."""
     offered = select_sentences(a.offered, a.shortlist, cfg.get("llm", "max_sentences_for_llm", default=40))
     prompt, ids = build_prompt(a.draft.title, a.n, a.shortlist, offered)
     own_text = f"{a.draft.title} {a.draft.primary_keyword}"
-    checked = validate.check(llm.propose(prompt), ids, a.parsed, a.n, cfg.settings, offered, own_text)
+
+    def run_check(edits):
+        return validate.check(edits, ids, a.parsed, a.n, cfg.settings, offered, own_text, a.common_words)
+
+    checked = run_check(llm.propose(prompt))
+    all_rejected = list(checked.rejected)
+    for _ in range(cfg.get("llm", "repair_rounds", default=1)):
+        missing = a.n - len(checked.accepted)
+        if missing <= 0 or not checked.rejected:
+            break
+        print(f"[llm] {len(checked.rejected)} rejected; asking for up to {missing} replacements", flush=True)
+        kept = [e["raw"] for e in checked.accepted]
+        repair = prompt + "\n\n" + repair_note(checked, ids, missing)
+        checked = run_check(kept + llm.propose(repair))
+        all_rejected += [(e, f"{r} (2nd pass)") for e, r in checked.rejected]
+    checked.rejected = all_rejected
     new_raw = content.apply_edits(a.parsed, checked.accepted, link_attrs) if checked.accepted else None
     return Result(checked, new_raw, prompt)
+
+
+def repair_note(checked, ids, missing: int) -> str:
+    tid_of = {id(c): t for t, c in ids.items()}
+    placed = "; ".join(f'{tid_of.get(id(e["candidate"]), "?")} in {e["sentence_id"]} ("{e["anchor"]}")'
+                       for e in checked.accepted) or "none"
+    bad = "\n".join(f'- {e.get("target_id", "?")} / {e.get("sentence_id", "?")} anchor "{e.get("anchor", "")}": {r}'
+                     for e, r in checked.rejected)
+    return (f"SECOND PASS. Already placed (keep, don't repeat these targets or sentences): {placed}.\n"
+            f"These proposals were rejected by the validator:\n{bad}\n"
+            f"Propose up to {missing} NEW edits that fix these problems, using other targets or other "
+            "sentences if needed. Skip rather than force. Return JSON in the same format with only the new edits.")

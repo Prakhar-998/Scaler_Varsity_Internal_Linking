@@ -55,7 +55,8 @@ def _overlap(a: set, b: set) -> float:
 
 
 def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
-          n: int, settings: dict, offered: dict | None = None, own_text: str = "") -> Checked:
+          n: int, settings: dict, offered: dict | None = None, own_text: str = "",
+          common_words: set | None = None) -> Checked:
     """`offered` is the set of sentences shown to the LLM (eligible ones); defaults to all.
     `own_text` is this article's title + primary keyword, used to stop self-topic anchors."""
     lk = settings["linking"]
@@ -102,6 +103,9 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
             reason = bad
         elif any(_overlap(content_tokens(anchor), content_tokens(a["anchor"])) >= 0.6 for a in accepted):
             reason = "anchor too similar to another new link"
+        elif any((content_tokens(anchor) & content_tokens(a["anchor"])) - (common_words or set())
+                 for a in accepted):
+            reason = "anchor repeats a term already linked in this article"
         elif rewritten.count(anchor) != 1:
             reason = "anchor not present exactly once in rewrite"
         elif any(ch in rewritten for ch in "<>[]"):
@@ -124,7 +128,7 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
         para_new[s.block] = para_new.get(s.block, 0) + 1
         accepted.append({
             "sentence_id": sid, "anchor": anchor, "rewritten": rewritten,
-            "url": cand.target.link, "candidate": cand, "original": s.text,
+            "url": cand.target.link, "candidate": cand, "original": s.text, "raw": e,
         })
 
     notes = []

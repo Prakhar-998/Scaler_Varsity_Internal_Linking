@@ -25,6 +25,9 @@ RULES
   article's own topic ("{title}") as the anchor for a different page.
 - The anchor must be accurate for the target: e.g. don't anchor "classical X" to a page about "quantum X".
 - Start anchors with a meaningful word, never with "on", "in", "the", "a", "this" or similar.
+- Anchors are complete noun phrases ("Hadamard gates"), never a fragment cut mid-phrase
+  ("sequence of Hadamard") and never led by a verb ("apply Hadamard gates").
+- Link each concept at most once per article.
 - Each anchor must be distinct; don't link two different pages with near-identical wording.
 - Vary anchors; don't reuse the exact same wording as the target's page title.
 - Keep the rewrite minimal: same meaning, same facts, same tone. Do not add numbers, claims, names or statistics that are not in the original sentence. Add at most about 15 words.

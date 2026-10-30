@@ -199,7 +199,7 @@ def main(argv=None):
         "shortlist": [{"title": c.target.title, "url": c.target.link, "type": c.target.type,
                        "category_match": c.cat_match, "relevance": c.relevance, "score": c.score,
                        "required": c.required} for c in a.shortlist],
-        "accepted": [] if res is None else [{k: v for k, v in e.items() if k != "candidate"}
+        "accepted": [] if res is None else [{k: v for k, v in e.items() if k not in ("candidate", "raw")}
                                             for e in res.checked.accepted],
         "rejected": [] if res is None else [{"reason": r, "edit": e} for e, r in res.checked.rejected],
         "prompt": None if res is None else res.prompt,
