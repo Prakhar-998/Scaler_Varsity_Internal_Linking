@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from .content import ParsedDraft
 from .scoring import Candidate
-from .text import similarity
+from .text import STOPWORDS, content_tokens, similarity, tokens
 
 GENERIC_ANCHORS = {"click here", "read more", "here", "this article", "this post", "learn more",
                    "this guide", "this link", "check this out"}
@@ -21,9 +21,43 @@ class Checked:
     notes: list[str]
 
 
+FILLER_START = {"on", "in", "at", "the", "a", "an", "this", "that", "these", "those", "by", "for",
+                "with", "to", "of", "from", "and", "or", "but", "its", "their", "our", "your", "as",
+                "into", "about", "while", "when", "which", "it"}
+
+
+def _bigrams(toks: list[str]) -> set[tuple[str, str]]:
+    toks = [t for t in toks if t not in STOPWORDS and len(t) > 1]
+    return set(zip(toks, toks[1:]))
+
+
+def anchor_problem(anchor: str, target, own_text: str) -> str | None:
+    """Anchor rules that keep link signals honest:
+    - it must describe the target page (share a topic word with it), not the current article
+    - it must not carry the current article's own topic phrase to a different page
+    - it must not open with a filler word ("On real hardware", "the ...")"""
+    words = anchor.split()
+    if words and words[0].lower().strip(",.;:") in FILLER_START:
+        return "anchor starts with a filler word"
+    a_tok = content_tokens(anchor)
+    target_tok = content_tokens(" ".join(target.keywords + [target.title]))
+    if not a_tok & target_tok:
+        return "anchor doesn't describe the target page"
+    own_bi = _bigrams(tokens(own_text))
+    for bi in _bigrams(tokens(anchor)):
+        if bi in own_bi and not set(bi) <= target_tok:
+            return "anchor uses this article's own topic for another page"
+    return None
+
+
+def _overlap(a: set, b: set) -> float:
+    return len(a & b) / min(len(a), len(b)) if a and b else 0.0
+
+
 def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
-          n: int, settings: dict, offered: dict | None = None) -> Checked:
-    """`offered` is the set of sentences shown to the LLM (eligible ones); defaults to all."""
+          n: int, settings: dict, offered: dict | None = None, own_text: str = "") -> Checked:
+    """`offered` is the set of sentences shown to the LLM (eligible ones); defaults to all.
+    `own_text` is this article's title + primary keyword, used to stop self-topic anchors."""
     lk = settings["linking"]
     max_drop = settings["llm"]["max_rewrite_similarity_drop"]
     new_per_para = lk["max_new_links_per_paragraph"]
@@ -64,6 +98,10 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
             reason = "anchor length out of range"
         elif anchor.lower() in GENERIC_ANCHORS:
             reason = "generic anchor"
+        elif (bad := anchor_problem(anchor, cand.target, own_text)):
+            reason = bad
+        elif any(_overlap(content_tokens(anchor), content_tokens(a["anchor"])) >= 0.6 for a in accepted):
+            reason = "anchor too similar to another new link"
         elif rewritten.count(anchor) != 1:
             reason = "anchor not present exactly once in rewrite"
         elif any(ch in rewritten for ch in "<>[]"):

@@ -447,3 +447,36 @@ def test_gemini_retries_on_504(monkeypatch):
 
     monkeypatch.setattr(g.client.models, "generate_content", fake)
     assert g.propose("x") == [{"sentence_id": "p1.s0"}] and calls["n"] == 2
+
+
+# ---------- anchor quality (cases from the first live preview) ----------
+
+QPE_TITLE = "Quantum Phase Estimation Explained Like You're 15"
+
+
+def _t(title, kws, url="https://www.interviewbit.com/varsity/blog/x/"):
+    return Target(url, title, "blog", ["Quantum Computing"], kws)
+
+
+@pytest.mark.parametrize("anchor,target,expect", [
+    ("phase estimation quantum circuit", _t("Quantum Circuit", ["quantum circuit"]),
+     "anchor uses this article's own topic for another page"),
+    ("applications of quantum phase estimation", _t("Quantum Computing Applications", ["quantum computing applications"]),
+     "anchor uses this article's own topic for another page"),
+    ("On real hardware", _t("Quantum Hardware: How Quantum Computers Actually Work", ["quantum hardware"]),
+     "anchor starts with a filler word"),
+    ("noisy intermediate-scale quantum", _t("NISQ Computing Explained", ["nisq computing", "noisy intermediate-scale quantum"]), None),
+    ("Hadamard gates", _t("Quantum Gates Explained: From Hadamard to CNOT", ["quantum gates"]), None),
+    ("quantum phase estimation", _t("Shor's Algorithm", ["shor's algorithm"]), "anchor doesn't describe the target page"),
+])
+def test_anchor_rules(anchor, target, expect):
+    from linker.validate import anchor_problem
+    assert anchor_problem(anchor, target, QPE_TITLE) == expect
+
+
+def test_near_duplicate_targets_deduped():
+    from linker.scoring import Candidate, dedupe_topics
+    a = Candidate(_t("Quantum Gates Explained: From Hadamard to CNOT", ["quantum gates"], "u1"), 0.9, 1, "same", None)
+    b = Candidate(_t("Hadamard Gate", ["hadamard gate"], "u2"), 0.8, 1, "same", None)
+    c = Candidate(_t("NISQ Computing Explained", ["nisq"], "u3"), 0.7, 1, "same", None)
+    assert [x.target.url for x in dedupe_topics([b, a, c])] == ["u1", "u3"]

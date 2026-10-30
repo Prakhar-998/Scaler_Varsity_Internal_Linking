@@ -21,6 +21,11 @@ RULES
 - One link per sentence, at most one link per paragraph (the paragraph is the "p" number in the ID), each target at most once.
 - Never pick two sentences that are next to each other (e.g. p4.s1 and p4.s2); spread links through the article.
 - Anchor: 2-6 words, a descriptive keyword phrase with clear intent. Never "click here", "read more", "this article", "here".
+- The anchor must describe the TARGET page: what the reader gets by clicking. Never use this
+  article's own topic ("{title}") as the anchor for a different page.
+- The anchor must be accurate for the target: e.g. don't anchor "classical X" to a page about "quantum X".
+- Start anchors with a meaningful word, never with "on", "in", "the", "a", "this" or similar.
+- Each anchor must be distinct; don't link two different pages with near-identical wording.
 - Vary anchors; don't reuse the exact same wording as the target's page title.
 - Keep the rewrite minimal: same meaning, same facts, same tone. Do not add numbers, claims, names or statistics that are not in the original sentence. Add at most about 15 words.
 - The "rewritten" sentence must contain the anchor text exactly once, character for character.

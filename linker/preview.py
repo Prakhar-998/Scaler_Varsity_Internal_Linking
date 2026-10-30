@@ -209,6 +209,13 @@ def main(argv=None):
     placed = "-" if res is None else len(res.checked.accepted)
     print(f"[preview] budget {a.budget}, existing internal {a.draft.existing_internal}, "
           f"planned {a.n}, placed {placed}")
+    for e in a.parsed.existing:
+        print(f"  = existing {e.kind}: [{e.anchor}] -> {e.url}")
+    prog_existing = a.draft.existing_program
+    prog_new = 0 if res is None else sum(1 for e in res.checked.accepted if e["candidate"].target.type == "program")
+    print(f"  program-page links: {prog_existing} already in post, {prog_new} new")
+    for n in notes:
+        print(f"  note: {n}")
     if res is not None:
         for e in res.checked.accepted:
             print(f"  + [{e['anchor']}] -> {e['url']}\n    {e['rewritten']}")

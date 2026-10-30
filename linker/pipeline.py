@@ -101,6 +101,7 @@ def propose(a: Analysis, llm, cfg: Config, link_attrs: str = "") -> Result:
     """Ask the LLM for edits, validate them, and build the new post content (not saved anywhere)."""
     offered = select_sentences(a.offered, a.shortlist, cfg.get("llm", "max_sentences_for_llm", default=40))
     prompt, ids = build_prompt(a.draft.title, a.n, a.shortlist, offered)
-    checked = validate.check(llm.propose(prompt), ids, a.parsed, a.n, cfg.settings, offered)
+    own_text = f"{a.draft.title} {a.draft.primary_keyword}"
+    checked = validate.check(llm.propose(prompt), ids, a.parsed, a.n, cfg.settings, offered, own_text)
     new_raw = content.apply_edits(a.parsed, checked.accepted, link_attrs) if checked.accepted else None
     return Result(checked, new_raw, prompt)

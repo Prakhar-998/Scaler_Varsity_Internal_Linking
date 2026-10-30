@@ -103,6 +103,23 @@ def target_link_count(word_count: int, cfg: Config) -> int:
     return max(lk["min_links"], min(lk["max_links"], n))
 
 
+def _topic(c: Candidate) -> set[str]:
+    return content_tokens(c.target.title) or content_tokens(" ".join(c.target.keywords))
+
+
+def dedupe_topics(cands: list[Candidate], threshold: float = 0.67) -> list[Candidate]:
+    """Drop lower-scored pages on the same sub-topic as a higher-scored one (e.g. "Hadamard Gate"
+    vs "Quantum Gates Explained: From Hadamard to CNOT"), so one article doesn't link both."""
+    kept: list[Candidate] = []
+    for c in sorted(cands, key=lambda x: x.score, reverse=True):
+        t = _topic(c)
+        if any(t and _topic(k) and len(t & _topic(k)) / min(len(t), len(_topic(k))) >= threshold
+               for k in kept):
+            continue
+        kept.append(c)
+    return kept
+
+
 def new_link_budget(draft: Draft, cfg: Config) -> int:
     """Total internal-link budget for the article minus links the writer already added."""
     lk = cfg.get("linking")
@@ -125,7 +142,7 @@ def plan(candidates: list[Candidate], draft: Draft, cfg: Config) -> tuple[int, l
     programs = [c for c in candidates if c.target.type == "program"]
     own_programs = [c for c in programs if c.cat_match == "same"]
     other_programs = [c for c in programs if c.cat_match != "same"]
-    blogs = [c for c in candidates if c.target.type != "program"]
+    blogs = dedupe_topics([c for c in candidates if c.target.type != "program"])
 
     chosen: list[Candidate] = []
     for c in own_programs[:prog_max]:
