@@ -135,8 +135,9 @@ def test_validation_rejects_bad_edits():
     ]
     res = validate.check(edits, ids, p, n, c.settings)
     reasons = [r for _, r in res.rejected]
-    assert reasons == ["unknown sentence_id", "unknown target_id", "generic anchor",
-                       "rewrite introduced new numbers", "rewrite changed too much"]
+    assert reasons[:4] == ["unknown sentence_id", "unknown target_id", "generic anchor",
+                           "rewrite introduced new numbers"]
+    assert reasons[4] == "rewrite changed too much" or reasons[4].startswith("rewrite adds words")
     assert not res.accepted and "required program link not placed" in res.notes
 
 
@@ -595,3 +596,33 @@ def test_verbatim_anchor_keeps_writer_sentence():
     res = _single("Shor's algorithm", orig, "Famous Shor's algorithm factors a number N by finding the period of a pattern.",
                   target_title="Shor's Algorithm Explained", kws=("shor's algorithm",))
     assert res.accepted and res.accepted[0]["rewritten"] == orig
+
+
+
+# ---------- cases from the Gen AI preview (instruction tuning post) ----------
+
+def test_single_word_anchor_for_distinctive_topic():
+    from linker.validate import _ok_single_word
+    rlhf = Target("u", "RLHF Explained: The 3-Step Pipeline + RLHF vs DPO", "blog", [], ["rlhf"])
+    quant = Target("u", "LLM Quantization Explained: GPTQ vs AWQ vs GGUF", "blog", [], ["llm quantization"])
+    assert _ok_single_word("RLHF", rlhf, {"llm", "ai"})
+    assert _ok_single_word("Quantization", quant, {"llm", "ai"})
+    assert not _ok_single_word("LLM", quant, {"llm", "ai"})          # common word
+    assert not _ok_single_word("DPO", quant, set())                   # not the target's topic
+
+
+def test_padding_words_rejected_for_blog_links():
+    orig = "LIMA's authors found validation perplexity did not track generation quality."
+    res = _single("perplexity in NLP", orig,
+                  "LIMA's authors found validation perplexity in NLP benchmarks did not track generation quality.",
+                  target_title="Perplexity in NLP", kws=("perplexity in nlp",), common=())
+    assert res.rejected and res.rejected[0][1].startswith("rewrite adds words beyond the anchor (benchmark")
+
+
+def test_case_insensitive_anchor_keeps_original():
+    orig = "Alignment methods such as RLHF and DPO can then optimise its behaviour using preference data."
+    res = _single("alignment methods such as RLHF", orig,
+                  "Popular alignment methods such as RLHF and DPO can then optimise its behaviour using preference data.",
+                  target_title="RLHF Explained", kws=("rlhf",), common=())
+    assert res.accepted and res.accepted[0]["rewritten"] == orig
+    assert res.accepted[0]["anchor"] == "Alignment methods such as RLHF"

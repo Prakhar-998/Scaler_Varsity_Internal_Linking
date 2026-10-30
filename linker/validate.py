@@ -53,6 +53,29 @@ def anchor_problem(anchor: str, target, own_text: str) -> str | None:
     return None
 
 
+def _ok_single_word(anchor: str, target, common: set) -> bool:
+    """One-word anchors are fine for distinctive terms that ARE the target's topic:
+    "RLHF", "Quantization", "Perplexity" - but not "AI", "models" or "data"."""
+    words = anchor.split()
+    if len(words) != 1:
+        return False
+    w = words[0].strip(".,;:()'\"’")
+    tok = content_tokens(w)
+    if not tok or tok & common:
+        return False
+    acronym = w.isupper() and len(w) >= 3
+    if not (acronym or len(w) >= 5):
+        return False
+    topic = content_tokens(" ".join(target.keywords[:3] + [target.title.split(":")[0]]))
+    return bool(tok & topic)
+
+
+def _added_words(original: str, rewritten: str, anchor: str) -> set[str]:
+    """Content words the rewrite introduced that are neither in the writer's sentence nor in the
+    anchor - e.g. "Popular", "Techniques like", "in NLP benchmarks". Blog links allow none."""
+    return content_tokens(rewritten) - content_tokens(original) - content_tokens(anchor)
+
+
 def _share_in(anchor: str, original: str) -> float:
     """Share of the anchor's content words that the writer's sentence already contained. A blog
     link should sit on what the sentence is already about, not on a topic the LLM bolted on."""
@@ -86,8 +109,13 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
         sid, tid = str(e.get("sentence_id", "")), str(e.get("target_id", ""))
         anchor, rewritten = str(e.get("anchor", "")).strip(), str(e.get("rewritten", "")).strip()
         s, cand = offered.get(sid), ids.get(tid)
-        if s is not None and anchor and s.text.count(anchor) == 1:
-            rewritten = s.text          # the anchor already fits: never touch the writer's wording
+        if s is not None and anchor:
+            low = s.text.lower()
+            if low.count(anchor.lower()) == 1:
+                # The anchor is already in the writer's sentence (any casing): keep the sentence
+                # exactly as written and link the writer's own words.
+                i = low.index(anchor.lower())
+                anchor, rewritten = s.text[i:i + len(anchor)], s.text
 
         reason = None
         if s is None:
@@ -108,7 +136,7 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
             reason = "paragraph link cap reached"
         elif anchor.lower() in existing_anchors:
             reason = "anchor duplicates an existing link's anchor"
-        elif not 2 <= len(anchor.split()) <= 8:
+        elif not (2 <= len(anchor.split()) <= 8 or _ok_single_word(anchor, cand.target, common)):
             reason = "anchor length out of range"
         elif anchor.lower() in GENERIC_ANCHORS:
             reason = "generic anchor"
@@ -119,6 +147,8 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
             reason = "anchor too similar to another new link"
         elif cand.target.type != "program" and _share_in(anchor, s.text) < 0.5:
             reason = "anchor topic isn't in the original sentence (forced insertion)"
+        elif len(_added_words(s.text, rewritten, anchor)) > (2 if cand.target.type == "program" else 0):
+            reason = "rewrite adds words beyond the anchor (" + ", ".join(sorted(_added_words(s.text, rewritten, anchor))) + ")"
         elif any((content_tokens(anchor) & content_tokens(a["anchor"])) - common
                  for a in accepted):
             reason = "anchor repeats a term already linked in this article"
