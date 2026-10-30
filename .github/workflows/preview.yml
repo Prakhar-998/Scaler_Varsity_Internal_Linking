@@ -17,6 +17,9 @@ on:
         type: boolean
         default: false
 
+env:
+  PYTHONUNBUFFERED: "1"   # show log lines live instead of at the end
+
 jobs:
   preview:
     runs-on: ubuntu-latest

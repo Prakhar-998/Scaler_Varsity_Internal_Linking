@@ -49,8 +49,10 @@ class WordPress:
         page = 1
         while True:
             r = self._get(path, page=page, per_page=100, **params)
+            total = int(r.headers.get("X-WP-TotalPages", 1))
+            print(f"[wp] {path} page {page}/{total}", flush=True)
             yield from r.json()
-            if page >= int(r.headers.get("X-WP-TotalPages", 1)):
+            if page >= total:
                 break
             page += 1
 

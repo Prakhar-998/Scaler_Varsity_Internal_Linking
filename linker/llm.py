@@ -57,7 +57,9 @@ class Gemini:
     def __init__(self, api_key: str, model: str, temperature: float = 0.2):
         from google import genai  # imported lazily so offline tests don't need the SDK configured
         self._genai = genai
-        self.client = genai.Client(api_key=api_key)
+        from google.genai import types
+        # Fail after 2 minutes instead of hanging the run if the API stalls.
+        self.client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=120_000))
         self.model = model
         self.temperature = temperature
 

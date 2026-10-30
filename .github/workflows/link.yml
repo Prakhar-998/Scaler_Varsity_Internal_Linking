@@ -18,6 +18,9 @@ concurrency:
   group: internal-linker
   cancel-in-progress: false
 
+env:
+  PYTHONUNBUFFERED: "1"   # show log lines live instead of at the end
+
 jobs:
   link:
     runs-on: ubuntu-latest

@@ -155,6 +155,7 @@ def main(argv=None):
     if not keyword:
         keyword = next((r.primary_keyword for r in rows if r.post_id == post["id"]), "")
 
+    print("[preview] reading categories and published posts from WordPress...", flush=True)
     cat_names = wp.categories()
     posts = wp.published_posts()
     inventory = build_inventory(posts, cat_names, rows, cfg)
@@ -175,7 +176,8 @@ def main(argv=None):
     elif not args.plan_only:
         from .llm import Gemini
         model = sec.get("GEMINI_MODEL") or cfg.get("llm", "default_model")
-        print(f"[preview] asking {model} for {a.n} links over {len(a.offered)} eligible sentences")
+        print(f"[preview] asking {model} for {a.n} links over {len(a.offered)} eligible sentences "
+              "(can take a minute)...", flush=True)
         res = pipeline.propose(a, Gemini(sec["GEMINI_API_KEY"], model, cfg.get("llm", "temperature")),
                                cfg, link_attrs=NEW_LINK_ATTRS)
         notes += res.checked.notes
