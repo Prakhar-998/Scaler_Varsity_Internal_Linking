@@ -113,6 +113,7 @@ linker/
   main.py        scheduled run orchestration, CLI (--post-id, --dry-run)
   pipeline.py    one-article pipeline shared by the runner and the preview
   preview.py     safe preview on any post -> before/after HTML report
+  audit.py       batch audit of live posts -> control-sheet tabs + reports (read-only)
   sheets.py      MasterSheet reader (read-only) + control-sheet log
   wordpress.py   REST client: inventory reads, draft-only writes
   inventory.py   link targets + inbound-link counts
@@ -126,10 +127,17 @@ tests/           offline tests incl. an end-to-end run with fake WordPress + LLM
 .github/workflows/
   link.yml       scheduled + manual run
   preview.yml    preview on one post (needs only GEMINI_API_KEY)
+  audit.yml      audit a sample of live posts (no WordPress credentials)
   tests.yml      CI
 ```
 
 ## Running
+
+**Audit live posts (for a demo or a baseline):** Actions → *Audit live posts*. It runs the linker on a
+random sample of published posts (spread across categories), or on URLs you choose, and writes the
+proposals to the control sheet tabs **Audit Summary** and **Audit Links**, plus before/after pages in
+the `linker-audit` artifact. It never changes the site: the workflow doesn't even receive the
+WordPress credentials.
 
 **Try it on one post first:** Actions → *Preview on a post*, or `python -m linker.preview --post <url>`.
 It writes a before/after report (`preview.html`) and changes nothing.

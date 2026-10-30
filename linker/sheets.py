@@ -102,6 +102,17 @@ class MasterSheet:
         return out
 
 
+def ensure_tab(book, title: str, header: list[str]):
+    """Get a worksheet by name, creating it (with its header row) if it doesn't exist."""
+    try:
+        ws = book.worksheet(title)
+    except gspread.WorksheetNotFound:
+        ws = book.add_worksheet(title=title, rows=1000, cols=len(header))
+    if ws.row_values(1) != header:
+        ws.update(range_name="A1", values=[header])
+    return ws
+
+
 class ControlSheet:
     """The bot's own sheet: which posts are done, and a reviewable log of every rewrite."""
 
@@ -111,13 +122,7 @@ class ControlSheet:
         self.changes = self._ensure(CHANGES_TAB, CHANGES_HEADER)
 
     def _ensure(self, title: str, header: list[str]):
-        try:
-            ws = self._book.worksheet(title)
-        except gspread.WorksheetNotFound:
-            ws = self._book.add_worksheet(title=title, rows=1000, cols=len(header))
-        if ws.row_values(1) != header:
-            ws.update(range_name="A1", values=[header])
-        return ws
+        return ensure_tab(self._book, title, header)
 
     def done_post_ids(self) -> set[int]:
         """Posts already linked for real. Dry runs don't count, so they re-run once live."""
@@ -142,3 +147,28 @@ class ControlSheet:
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+AUDIT_SUMMARY_TAB = "Audit Summary"
+AUDIT_LINKS_TAB = "Audit Links"
+AUDIT_SUMMARY_HEADER = ["run_id", "run_at", "post_title", "post_url", "category", "primary_keyword", "words",
+                        "link_budget", "existing_internal", "existing_external", "new_links_planned",
+                        "new_links_proposed", "sentences_left_unchanged", "rejected", "model", "notes"]
+AUDIT_LINKS_HEADER = ["run_id", "post_title", "post_url", "anchor", "target_title", "target_url",
+                      "target_type", "category_match", "score", "sentence_changed",
+                      "original_sentence", "proposed_sentence"]
+
+
+class AuditSheet:
+    """Audit results on live posts: proposals only, nothing is applied anywhere.
+    Two tabs in the control sheet, built to be shown to the team as-is."""
+
+    def __init__(self, service_account_json: str, sheet_id: str):
+        book = _client(service_account_json, WRITE_SCOPES).open_by_key(sheet_id)
+        self.summary = ensure_tab(book, AUDIT_SUMMARY_TAB, AUDIT_SUMMARY_HEADER)
+        self.links = ensure_tab(book, AUDIT_LINKS_TAB, AUDIT_LINKS_HEADER)
+
+    def append(self, summary_row: list, link_rows: list[list]):
+        self.summary.append_row(summary_row, value_input_option="RAW")
+        if link_rows:
+            self.links.append_rows(link_rows, value_input_option="RAW")

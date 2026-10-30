@@ -650,3 +650,55 @@ def test_manual_post_id_not_in_sheet_still_runs(monkeypatch):
     from linker import main as m
     rows = []
     assert m.ready_rows(rows, cfg().settings, set(), 1573) == []
+
+
+# ---------- audit of live posts (sheet only, never WordPress) ----------
+
+def test_audit_logs_to_sheet_and_never_writes_wordpress(tmp_path, monkeypatch):
+    from linker import audit
+    from linker.wordpress import PublishedPost
+    import linker.llm as llm_mod
+    import linker.sheets as sheets_mod
+
+    posts = [PublishedPost(77, BASE + "llm-evals-for-fdes/", "LLM Evals for FDEs", [7], RENDERED),
+             PublishedPost(78, BASE + "takt-time/", "Takt Time", [9], "<p>Short.</p>")]
+    created = {}
+
+    class WP:
+        def __init__(self, base, user, pw, statuses):
+            created["user"], created["pw"] = user, pw
+        def categories(self): return {7: "Forward Deployed Engineering", 9: "AI Powered Operations"}
+        def published_posts(self): return posts
+        def update_draft(self, *a): raise AssertionError("audit must never write to WordPress")
+
+    class Sheet:
+        def __init__(self, *a): self.summary, self.links = [], []; created["sheet"] = self
+        def append(self, s, l): self.summary.append(s); self.links.extend(l)
+
+    monkeypatch.setattr(audit, "WordPress", WP)
+    monkeypatch.setattr(audit, "build_inventory", lambda *a, **k: inventory())
+    monkeypatch.setattr(llm_mod, "gemini_from_config", lambda *a, **k: FakeLLM())
+    monkeypatch.setattr(sheets_mod, "AuditSheet", Sheet)
+    monkeypatch.setattr(audit.time, "sleep", lambda s: None)
+    for k, v in {"GEMINI_API_KEY": "x", "GOOGLE_SERVICE_ACCOUNT_JSON": "{}", "CONTROL_SHEET_ID": "c"}.items():
+        monkeypatch.setenv(k, v)
+    for k in ("MASTERSHEET_ID", "WP_USERNAME", "WP_APP_PASSWORD"):
+        monkeypatch.delenv(k, raising=False)
+
+    audit.main(["--posts", BASE + "llm-evals-for-fdes/", "--out", str(tmp_path)])
+    sheet = created["sheet"]
+    assert created["user"] is None and created["pw"] is None          # read-only client
+    assert len(sheet.summary) == 1 and sheet.summary[0][3] == BASE + "llm-evals-for-fdes/"
+    assert len(sheet.links) == 2 and all(len(r) == 12 for r in sheet.links)
+    assert (tmp_path / "index.html").exists() and (tmp_path / "llm-evals-for-fdes.html").exists()
+
+
+def test_audit_sample_spreads_across_categories():
+    from linker.audit import pick_posts
+    from linker.wordpress import PublishedPost
+    posts = [PublishedPost(i, f"u{i}", f"T{i}", [1 if i < 10 else 2], "") for i in range(20)]
+    chosen = pick_posts(posts, {1: "A", 2: "B"}, 4, None, seed=1, explicit=[])
+    assert len(chosen) == 4 and {p.category_ids[0] for p in chosen} == {1, 2}
+    assert [p.id for p in pick_posts(posts, {1: "A", 2: "B"}, 4, None, 1, [])] == [p.id for p in chosen]  # seed repeats
+    only_b = pick_posts(posts, {1: "A", 2: "B"}, 3, "b", seed=2, explicit=[])
+    assert all(p.category_ids == [2] for p in only_b)

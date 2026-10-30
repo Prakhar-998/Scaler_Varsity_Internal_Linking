@@ -1,0 +1,68 @@
+name: Audit live posts
+
+# Runs the linker on published posts and logs what it WOULD add to the control sheet
+# ("Audit Summary" + "Audit Links" tabs). Never changes anything on WordPress.
+
+on:
+  workflow_dispatch:
+    inputs:
+      posts:
+        description: "Specific post URLs, comma-separated (leave empty for a random sample)"
+        required: false
+      sample:
+        description: "How many random posts (max 30)"
+        required: false
+        default: "10"
+      category:
+        description: "Only sample this WordPress category, e.g. Generative AI (optional)"
+        required: false
+      seed:
+        description: "Random seed to repeat a previous sample (optional)"
+        required: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+concurrency:
+  group: linker-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Run audit
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          MASTERSHEET_ID: ${{ secrets.MASTERSHEET_ID }}
+          CONTROL_SHEET_ID: ${{ secrets.CONTROL_SHEET_ID }}
+          # WordPress credentials are intentionally NOT passed: the audit is read-only.
+          POSTS: ${{ inputs.posts }}
+          SAMPLE: ${{ inputs.sample }}
+          CATEGORY: ${{ inputs.category }}
+          SEED: ${{ inputs.seed }}
+        run: |
+          args=(--sample "${SAMPLE:-10}")
+          [ -n "$POSTS" ] && args+=(--posts "$POSTS")
+          [ -n "$CATEGORY" ] && args+=(--category "$CATEGORY")
+          [ -n "$SEED" ] && args+=(--seed "$SEED")
+          python -m linker.audit "${args[@]}"
+
+      - name: Upload before/after reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linker-audit
+          path: out/audit/
+          if-no-files-found: ignore
+          retention-days: 30
