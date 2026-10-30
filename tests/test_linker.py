@@ -573,3 +573,25 @@ def test_common_words_dont_make_anchors_similar():
     res = _single("quantum computing applications", orig, orig, accepted_anchor="superposition in quantum computing",
                   target_title="Quantum Computing Applications", kws=("quantum computing applications",))
     assert len(res.accepted) == 2, res.rejected
+
+
+# ---------- cases from the third live preview ----------
+
+def test_vague_noun_anchor_rejected():
+    from linker.validate import anchor_problem
+    t = Target("u", "Superposition in Quantum Computing", "blog", [], ["superposition"])
+    assert anchor_problem("parts of their superposition", t, "Quantum Phase Estimation") == "anchor starts with a filler word"
+
+
+def test_punctuation_only_rewrite_rejected():
+    orig = "That is why full-scale QPE is hard on today's noisy intermediate-scale quantum (NISQ) hardware."
+    res = _single("NISQ hardware", orig, orig.replace("(NISQ) hardware", "(NISQ hardware)"),
+                  target_title="NISQ Explained", kws=("nisq",))
+    assert res.rejected and res.rejected[0][1] == "rewrite only changed punctuation"
+
+
+def test_verbatim_anchor_keeps_writer_sentence():
+    orig = "Shor's algorithm factors a number N by finding the period of a pattern."
+    res = _single("Shor's algorithm", orig, "Famous Shor's algorithm factors a number N by finding the period of a pattern.",
+                  target_title="Shor's Algorithm Explained", kws=("shor's algorithm",))
+    assert res.accepted and res.accepted[0]["rewritten"] == orig

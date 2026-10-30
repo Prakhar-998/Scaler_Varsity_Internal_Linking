@@ -71,7 +71,7 @@ def analyse(raw: str, title: str, categories: list[str], primary_keyword: str, p
                     scoring.target_link_count(d.word_count, cfg), common_words(inventory), _cfg=cfg)
 
 
-def common_words(inventory: list[Target], share: float = 0.05, floor: int = 5) -> set[str]:
+def common_words(inventory: list[Target], share: float = 0.02, floor: int = 4) -> set[str]:
     """Words that appear in many page titles (e.g. "quantum", "ai") are not distinctive enough to
     treat two anchors as "the same term". Learned from the blog's own titles on every run."""
     df: dict[str, int] = {}

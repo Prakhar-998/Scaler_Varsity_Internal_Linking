@@ -23,7 +23,10 @@ class Checked:
 
 FILLER_START = {"on", "in", "at", "the", "a", "an", "this", "that", "these", "those", "by", "for",
                 "with", "to", "of", "from", "and", "or", "but", "its", "their", "our", "your", "as",
-                "into", "about", "while", "when", "which", "it"}
+                "into", "about", "while", "when", "which", "it",
+                # vague nouns: "parts of their superposition", "sequence of Hadamard"
+                "part", "parts", "kind", "kinds", "type", "types", "way", "ways", "sequence",
+                "set", "range", "number", "lot", "lots", "piece", "pieces", "series", "aspects"}
 
 
 def _bigrams(toks: list[str]) -> set[tuple[str, str]]:
@@ -83,6 +86,8 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
         sid, tid = str(e.get("sentence_id", "")), str(e.get("target_id", ""))
         anchor, rewritten = str(e.get("anchor", "")).strip(), str(e.get("rewritten", "")).strip()
         s, cand = offered.get(sid), ids.get(tid)
+        if s is not None and anchor and s.text.count(anchor) == 1:
+            rewritten = s.text          # the anchor already fits: never touch the writer's wording
 
         reason = None
         if s is None:
@@ -119,6 +124,8 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
             reason = "anchor repeats a term already linked in this article"
         elif rewritten.count(anchor) != 1:
             reason = "anchor not present exactly once in rewrite"
+        elif rewritten != s.text and tokens(rewritten) == tokens(s.text):
+            reason = "rewrite only changed punctuation"
         elif any(ch in rewritten for ch in "<>[]"):
             reason = "markup in rewrite"
         elif similarity(s.text, rewritten) < 1 - max_drop:
