@@ -63,7 +63,8 @@ class Gemini:
     RETRYABLE = {429, 500, 502, 503, 504}
 
     def __init__(self, api_key: str, model: str, temperature: float | None = None,
-                 thinking_level: str | None = "low", timeout_s: int = 300, retries: int = 2):
+                 thinking_level: str | None = "low", timeout_s: int = 300, retries: int = 2,
+                 fallback_models: list[str] | None = None):
         from google import genai  # imported lazily so offline tests don't need the SDK configured
         from google.genai import types
         self._types = types
@@ -73,6 +74,8 @@ class Gemini:
         self.temperature = temperature
         self.thinking_level = thinking_level
         self.retries = retries
+        self.models = [model] + [m for m in (fallback_models or []) if m and m != model]
+        self.used_model = None
 
     def _config(self):
         t = self._types
@@ -84,27 +87,48 @@ class Gemini:
             kw["thinking_config"] = t.ThinkingConfig(thinking_level=self.thinking_level)
         return t.GenerateContentConfig(**kw)
 
-    def propose(self, prompt: str) -> list[dict]:
+    def _call(self, model: str, prompt: str):
         from google.genai import errors
         attempt = 0
         while True:
             attempt += 1
             try:
-                resp = self.client.models.generate_content(model=self.model, contents=prompt,
+                return self.client.models.generate_content(model=model, contents=prompt,
                                                            config=self._config())
-                break
             except errors.APIError as e:
                 code = getattr(e, "code", None)
                 if code == 400 and self.thinking_level and "think" in str(e).lower():
-                    print(f"[llm] model rejected thinking_level; retrying without it", flush=True)
+                    print(f"[llm] {model} rejected thinking_level; retrying without it", flush=True)
                     self.thinking_level = None
                     continue
                 if code in self.RETRYABLE and attempt <= self.retries:
                     wait = 15 * attempt
-                    print(f"[llm] {code} from Gemini; retry {attempt}/{self.retries} in {wait}s", flush=True)
+                    print(f"[llm] {code} from {model}; retry {attempt}/{self.retries} in {wait}s", flush=True)
                     time.sleep(wait)
                     continue
                 raise
+
+    def propose(self, prompt: str) -> list[dict]:
+        """Try the main model; if it stays overloaded/unavailable, fall back to the next model."""
+        from google.genai import errors
+        last = None
+        for i, model in enumerate(self.models):
+            try:
+                resp = self._call(model, prompt)
+                self.used_model = model
+                if i:
+                    print(f"[llm] answered by fallback model {model}", flush=True)
+                break
+            except errors.APIError as e:
+                code = getattr(e, "code", None)
+                if code in self.RETRYABLE or code == 404:
+                    last = e
+                    if i + 1 < len(self.models):
+                        print(f"[llm] {model} unavailable ({code}); switching to {self.models[i + 1]}", flush=True)
+                    continue
+                raise
+        else:
+            raise last
         data = json.loads(resp.text)
         return data.get("edits", []) if isinstance(data, dict) else []
 
@@ -113,4 +137,5 @@ def gemini_from_config(cfg, secrets: dict) -> Gemini:
     llm = cfg.get("llm")
     model = secrets.get("GEMINI_MODEL") or llm["default_model"]
     return Gemini(secrets["GEMINI_API_KEY"], model, llm.get("temperature"),
-                  thinking_level=llm.get("thinking_level"), timeout_s=llm.get("timeout_seconds", 300))
+                  thinking_level=llm.get("thinking_level"), timeout_s=llm.get("timeout_seconds", 300),
+                  fallback_models=llm.get("fallback_models") or [])

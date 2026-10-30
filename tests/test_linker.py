@@ -480,3 +480,24 @@ def test_near_duplicate_targets_deduped():
     b = Candidate(_t("Hadamard Gate", ["hadamard gate"], "u2"), 0.8, 1, "same", None)
     c = Candidate(_t("NISQ Computing Explained", ["nisq"], "u3"), 0.7, 1, "same", None)
     assert [x.target.url for x in dedupe_topics([b, a, c])] == ["u1", "u3"]
+
+
+def test_gemini_falls_back_when_overloaded(monkeypatch):
+    from google.genai import errors
+    import linker.llm as llm_mod
+    monkeypatch.setattr(llm_mod.time, "sleep", lambda s: None)
+    g = llm_mod.Gemini("k", "gemini-3.8-flash", fallback_models=["gemini-3.6-flash"])
+    seen = []
+
+    class R:
+        text = '{"edits": []}'
+
+    def fake(model, contents, config):
+        seen.append(model)
+        if model == "gemini-3.8-flash":
+            raise errors.ServerError(503, {"error": {"code": 503, "message": "high demand", "status": "UNAVAILABLE"}})
+        return R()
+
+    monkeypatch.setattr(g.client.models, "generate_content", fake)
+    assert g.propose("x") == [] and g.used_model == "gemini-3.6-flash"
+    assert seen == ["gemini-3.8-flash"] * 3 + ["gemini-3.6-flash"]
