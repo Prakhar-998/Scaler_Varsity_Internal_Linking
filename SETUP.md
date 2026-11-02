@@ -94,15 +94,24 @@ A published post is a fine test subject, but its existing links count toward the
 get fewer new links than a fresh draft. To preview a draft, pass its post ID and set `WP_USERNAME` /
 `WP_APP_PASSWORD`.
 
-## 6. First real runs (dry run first)
+## 6. Going live
 
-1. **Actions → Internal linker → Run workflow**, leave *Dry run* ticked, and optionally enter one
-   post ID (the number in the MasterSheet's Draft Link, `post.php?post=1940`).
-2. Check the control sheet's **Changes** tab: original vs rewritten sentence, anchor, target.
-   The run summary and the `linker-report` artifact show rejected edits and why.
-3. When the proposals look right, run once with *Dry run* unticked on a single post and check the draft
-   in WordPress.
-4. Then set repository **variable** `DRY_RUN` = `false` so the 30-minute schedule edits drafts.
+1. **Actions → Internal linker**: make sure the workflow is enabled (if it shows "This workflow was
+   disabled", click *Enable workflow*).
+2. Optional shadow period: keep the repository variable `DRY_RUN` = `true` for a few days. Every
+   30 minutes the bot logs what it *would* add for drafts marked *Ready to Publish* to the control
+   sheet's **Changes** tab, without touching WordPress.
+3. Go live: set `DRY_RUN` = `false` (Settings → Secrets and variables → Actions → Variables).
+   From the next scheduled run, drafts that are *Ready to Publish*, have a Draft Link and aren't
+   published get linked automatically.
+4. To pause at any time: set `DRY_RUN` back to `true`, or disable the *Internal linker* workflow.
 
-A post is marked done only after a live (non-dry) run links it, so dry runs can be repeated freely.
-To re-run a post, delete its `linked` row in the `Processed` tab or run with its post ID.
+What triggers a draft: MasterSheet *Content Status* = `Ready to Publish`, a Draft Link
+(`post.php?post=ID`), *Publishing Status* not `Published`, WP status `draft` or `pending`, and not
+already linked. Each post is linked once; to re-run one, delete its `linked` row in **Processed** or
+run the workflow manually with its post ID.
+
+Undo: open the draft in WordPress → Revisions → restore the revision before "Internal Linker".
+
+Note for editors: the bot saves the whole draft. If someone is editing that draft at the same moment,
+the last save wins, so finish edits before marking a row *Ready to Publish*.

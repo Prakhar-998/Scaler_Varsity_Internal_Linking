@@ -2,11 +2,16 @@
 
 Automated contextual internal linking for the [InterviewBit Varsity blog](https://www.interviewbit.com/varsity/blog/).
 Writers submit articles through a Google Sheet; an existing automation turns them into WordPress drafts.
-This job picks up those drafts, decides which pages each one should link to, has an LLM lightly rewrite a
-few sentences so the links read naturally, validates every edit, and updates the draft before an editor
-publishes it.
+This job picks up drafts that are ready, decides which pages each one should link to, places the links
+on words the writer already used, checks every link against strict rules, and updates the draft before
+an editor publishes it.
 
 It runs on a schedule in GitHub Actions: no server, no n8n instance, and a full review log.
+
+**In plain words:** code decides *which* pages to link (by category, relevance and priority for
+programme pages); Gemini only picks *which sentence and which words* carry each link; a rule checker
+throws out anything that changes the writer's meaning. If there's no natural place for a link, the
+post simply gets fewer links. Nothing is forced to hit a number.
 
 ## How it works
 
@@ -15,41 +20,28 @@ flowchart LR
     MS[(MasterSheet<br/>read-only)] -->|drafts ready to link| R[Runner]
     WP[(WordPress<br/>REST API)] -->|published posts, categories,<br/>existing links| INV[Link inventory]
     MS -->|primary keywords| INV
-    CFG[program_pages.csv] -->|program pages,<br/>anchor variants| INV
+    CFG[program_pages.csv] -->|program pages,<br/>anchor ideas| INV
     INV --> SC[Scoring + quotas<br/>deterministic]
     R --> SC
-    SC -->|~14-target shortlist| LLM[Gemini<br/>rewrite sentences]
-    LLM -->|JSON edits| V[Validator]
-    V -->|accepted edits| WP
-    V -->|every edit, kept or rejected| CS[(Control sheet<br/>review log)]
+    SC -->|~14-target shortlist<br/>+ up to 40 sentences| LLM[Gemini<br/>pick sentence + anchor]
+    LLM -->|JSON proposals| V[Validator<br/>~25 rules]
+    V -->|rejected + reasons<br/>one retry| LLM
+    V -->|accepted links| WP
+    V -->|every link, kept or rejected| CS[(Control sheet<br/>review log)]
 ```
 
-**Code decides *what* to link; the LLM only decides *how to phrase it*.** The model never sees the whole
-site, never writes HTML, and can't introduce a URL that the scorer didn't shortlist.
+The model never sees the whole site, never writes HTML, and can't introduce a URL the scorer didn't
+shortlist. The link tag itself is built by code.
 
 ### 1. Link inventory
 Rebuilt every run from live sources, so a newly published post becomes a link target automatically:
 - published posts from the WordPress REST API (URL, title, categories, outbound links)
-- each post's primary keyword from the MasterSheet, plus its title phrase, as anchor variants
-- program landing pages and their anchor variants from `config/program_pages.csv` (see below)
+- anchor ideas per post: its primary keyword from the MasterSheet plus the topic part of its title
+  ("The Hadamard Gate Explained Better Than Your Textbook" → "hadamard gate")
+- program landing pages and their anchor ideas from `config/program_pages.csv`
 - inbound-link counts per URL, computed from every published post's content
 
-### Program pages file
-`config/program_pages.csv` is the one place to add, pause or remove program landing pages. Edit it in
-GitHub's web editor (it renders as a table); the next run picks it up.
-
-| Column | Meaning |
-|---|---|
-| `id` | short unique name, e.g. `fde` |
-| `active` | `yes` to link to it, `no` to pause without deleting |
-| `name` | program name (shown to the LLM) |
-| `url` | landing page URL; tracking parameters are stripped automatically |
-| `categories` | WordPress categories this program "owns", separated by `\|` (exact WP names) |
-| `anchors` | anchor-text ideas, most preferred first, separated by `\|` |
-
-A program with no categories is still a link target, but only where it's highly relevant.
-
-### 2. Weightage function
+### 2. Choosing pages: weightage function
 
 ```
 score = W_type × W_category × (0.3 + 0.7 × relevance) + orphan_boost
@@ -59,103 +51,128 @@ score = W_type × W_category × (0.3 + 0.7 × relevance) + orphan_boost
 |---|---|
 | `W_type` | program landing page 1.0 · pillar 0.7 · blog 0.5 |
 | `W_category` | same WP category 1.0 · adjacent category 0.4 · other 0.1 |
-| `relevance` | 1.0 if a keyword variant appears verbatim in the draft, 0.7 if all its words share a sentence, else topical token overlap |
+| `relevance` | 1.0 if a keyword appears verbatim in the article, 0.7 if all its words share a sentence, else topical overlap |
 | `orphan_boost` | up to +0.3 for pages with few inbound links, decaying to 0 at 5 links |
 
-Hard exclusions: the post itself, pages it already links to, and pages targeting the same primary
-keyword (cannibalisation guard).
+**Never linked:** the post itself; pages it already links to; pages targeting the same primary keyword
+(cannibalisation guard); a second page on the same sub-topic (e.g. both "Hadamard Gate" and "Quantum
+Gates: From Hadamard to CNOT"). Blog pages with very low relevance are dropped.
 
-### 3. Quotas
-- Link budget: about 1 internal link per 275 words, clamped to 3–8 **in total, including links the writer already added**.
-- The post's own program page is **required** (min 1, max 2 program links).
-- At least 60% of blog links come from the post's own WP category.
+### 3. Quotas (a ceiling, not a target)
+- Budget: about 1 internal link per 275 words, 3–8 **in total**. The writer's existing internal links
+  count toward it (each page once; image/banner links don't count). New links = budget − existing.
+- The post's own programme page gets one "required" slot (max 2 programme links). Required means
+  "try first", not "force": if no sentence fits, it's skipped and logged.
+- At least 60% of blog links come from the post's own WordPress category.
 
 All weights and quotas live in `config/settings.yaml`.
 
-### Link hygiene (writer-added links)
-Writers often add their own links. Every existing link in the post is read first and classified as
-**internal** (Varsity blog or program page) or **external**, with relative URLs resolved.
-- Existing internal links **count toward the article's total budget**: new links = budget − existing
-  internal. External links can be counted too (`count_external_in_budget`).
-- Existing program-page links count toward the program quota.
-- Pages the post already links to are never linked again.
-- No new link in a sentence that already has one, or in the sentence directly before or after
-  (`min_sentence_gap`). New links also keep that distance from each other.
-- At most 1 new link per paragraph and at most 2 links per paragraph in total, counting the
-  writer's links (`max_total_links_per_paragraph`).
-- A new anchor may not repeat an existing link's anchor text.
+### 4. Gemini's job, and the wording rules
+Gemini receives the shortlist and up to 40 sentences it may use. Never offered: intro, headings, lists,
+tables, FAQ sections, sentences with formatting, and sentences that already have a link or sit next to one.
 
-### 4. LLM rewrite + validation
-Gemini gets the shortlist and a list of sentences it may edit. Excluded from that list: the intro, headings,
-FAQ sections/blocks, lists, and any sentence with existing links or inline formatting. It returns JSON
-edits; each one must pass:
+- **Blog links: the writer's words, unchanged.** The anchor must be text already in the sentence; the
+  sentence is not rewritten. If no sentence mentions a page's topic, that page is skipped.
+- **Programme links: insert only.** A short phrase (≤ 6 words) may be inserted, but only in a
+  sentence already about learning/courses/certifications/careers or the programme's topic, and
+  nothing of the writer's (words or punctuation) may be changed or removed.
 
-- known sentence and target IDs, each used at most once
-- one link per sentence and per paragraph
-- descriptive anchor (2–8 words, no "click here"), present exactly once in the rewrite
-- rewrite stays close to the original (token similarity) and adds no new numbers or markup
-- total within the link budget
+### 5. Validation (deterministic)
+Every proposal is checked; failures are dropped and logged with a reason. Highlights:
+- the wording rules above; no new numbers, markup or punctuation-only edits
+- anchors: 2–8 words (or one distinctive term that *is* the target's topic, e.g. "RLHF"); no filler
+  starts ("On…", "parts of…"); must describe the target page; must not use the article's own topic
+  for another page; one link per term per article; no near-identical anchors
+- spacing: one link per sentence, never in or next to a linked sentence, ≤ 1 new and ≤ 2 total links
+  per paragraph
+- within the budget
 
-Accepted edits are applied by string surgery on the raw post content, so Gutenberg block markup and all
-formatting outside the edited sentence are untouched.
+If anything is rejected, Gemini gets **one** retry with the reasons. Whatever survives is final.
+Accepted links are applied by string surgery on the raw post, so Gutenberg blocks and all other
+formatting are untouched.
+
+### Link hygiene and findings
+- Existing links are classified internal (Varsity blog / programme pages) or external.
+- Reports flag posts where the writer linked the same page several times, and WordPress categories
+  missing from `config/categories.yaml`.
+
+### Reliability
+- Gemini: `gemini-3.8-flash` with low thinking, 5-minute deadline, 2 retries on 429/5xx, then
+  fallback models (`gemini-3.6-flash`, `gemini-3.5-flash-lite`).
+- WordPress: posts fetched in light pages with retries; if article bodies can't be read, the run
+  continues without inbound counts.
+- One bad post can't stop a run.
+
+## Program pages file
+`config/program_pages.csv` is the one place to add, pause or remove programme landing pages. Edit it in
+GitHub's web editor (it renders as a table); the next run picks it up.
+
+| Column | Meaning |
+|---|---|
+| `id` | short unique name, e.g. `fde` |
+| `active` | `yes` to link to it, `no` to pause without deleting |
+| `name` | programme name (shown to the LLM) |
+| `url` | landing page URL; tracking parameters are stripped automatically |
+| `categories` | WordPress categories this programme "owns", separated by `\|` (exact WP names) |
+| `anchors` | anchor-text ideas, most preferred first, separated by `\|` |
 
 ## Safety
 - **MasterSheet is never written to**: read-only OAuth scope, and the service account is only a Viewer.
-- **Only drafts are edited**: post status is re-checked immediately before every write; published posts are refused.
-- **Dry run by default**: proposals go to the review log until `DRY_RUN=false`.
-- **Fully reversible**: every update creates a WordPress revision.
-- **One bad post can't stop a run**: errors are logged per post.
+- **Only drafts are edited**: status is re-checked right before every write; published posts are refused.
+- **Preview and audit can't edit anything**: the audit workflow doesn't receive WordPress credentials.
+- **Dry run until switched**: with `DRY_RUN=true` proposals only go to the control sheet.
+- **Fully reversible**: every update creates a WordPress revision ("Internal Linker" user).
+
+## Workflows
+
+| Workflow | What it does | Changes WordPress? |
+|---|---|---|
+| **Internal linker** | Every 30 min, Mon–Sat 09:30–21:00 IST: links drafts marked *Ready to Publish* that have a Draft Link. Manual runs can target one post ID. | Only when `DRY_RUN=false`, only drafts |
+| **Preview on a post** | One post (URL, edit link or ID) → before/after `preview.html` | Never |
+| **Audit live posts** | Random sample or chosen URLs → control-sheet tabs *Audit Summary* / *Audit Links* + before/after pages | Never |
+| **Tests** | Offline test suite on every push | Never |
+
+Control sheet tabs: **Processed** (one row per linked post), **Changes** (one row per link, original vs
+new sentence), **Audit Summary**, **Audit Links**.
 
 ## Repo layout
 
 ```
 linker/
   main.py        scheduled run orchestration, CLI (--post-id, --dry-run)
-  pipeline.py    one-article pipeline shared by the runner and the preview
+  pipeline.py    one-article pipeline shared by runner, preview and audit
   preview.py     safe preview on any post -> before/after HTML report
   audit.py       batch audit of live posts -> control-sheet tabs + reports (read-only)
   sheets.py      MasterSheet reader (read-only) + control-sheet log
   wordpress.py   REST client: inventory reads, draft-only writes
   inventory.py   link targets + inbound-link counts
   scoring.py     weightage function and quota planner
-  content.py     safe-sentence extraction and edit application
-  llm.py         Gemini prompt + call
-  validate.py    deterministic edit checks
-config/          settings.yaml (weights, quotas), program_pages.csv (program pages),
+  content.py     safe-sentence extraction, existing-link hygiene, edit application
+  llm.py         Gemini prompt, retries, fallback models
+  validate.py    deterministic checks on every proposed link
+config/          settings.yaml (weights, quotas, rules), program_pages.csv (programme pages),
                  categories.yaml (adjacent categories, pillar pages, anchor overrides)
-tests/           offline tests incl. an end-to-end run with fake WordPress + LLM
-.github/workflows/
-  link.yml       scheduled + manual run
-  preview.yml    preview on one post (needs only GEMINI_API_KEY)
-  audit.yml      audit a sample of live posts (no WordPress credentials)
-  tests.yml      CI
+tests/           offline tests, many built from real preview/audit cases
+.github/workflows/  link.yml, preview.yml, audit.yml, tests.yml
 ```
 
-## Running
+## Running locally
 
-**Audit live posts (for a demo or a baseline):** Actions → *Audit live posts*. It runs the linker on a
-random sample of published posts (spread across categories), or on URLs you choose, and writes the
-proposals to the control sheet tabs **Audit Summary** and **Audit Links**, plus before/after pages in
-the `linker-audit` artifact. It never changes the site: the workflow doesn't even receive the
-WordPress credentials.
-
-**Try it on one post first:** Actions → *Preview on a post*, or `python -m linker.preview --post <url>`.
-It writes a before/after report (`preview.html`) and changes nothing.
-
-See **[SETUP.md](SETUP.md)** for secrets and the first dry run. Locally:
+See **[SETUP.md](SETUP.md)** for secrets and going live.
 
 ```bash
 pip install -r requirements.txt
 python -m pytest -q                    # offline, no credentials needed
-export GOOGLE_SERVICE_ACCOUNT_JSON="$(cat key.json)" MASTERSHEET_ID=... CONTROL_SHEET_ID=... \
-       WP_USERNAME=... WP_APP_PASSWORD=... GEMINI_API_KEY=...
-python -m linker.main --post-id 1940 --dry-run
+python -m linker.preview --post https://www.interviewbit.com/varsity/blog/rlhf/   # needs GEMINI_API_KEY
+python -m linker.audit --sample 5      # needs Gemini + Google service account + CONTROL_SHEET_ID
+python -m linker.main --post-id 1573 --dry-run
 ```
 
 ## Roadmap
 - Embedding-based relevance (catch paraphrases the keyword matcher misses)
 - Anchor-diversity tracking per target across the whole blog
 - Reverse linking: suggest older posts that should link to each newly published one
+- Writer feedback: flag posts with no natural link opportunities before they're submitted
 
 ---
 Built by Prakhar Jaiswal.
