@@ -762,3 +762,189 @@ def test_existing_links_counted_once_and_images_ignored():
     p = content.parse(raw, SETTINGS_SKIP, internal_prefixes=["https://www.interviewbit.com/varsity/"])
     assert p.existing_internal == 1
     assert list(p.duplicate_internal.values()) == [3]
+
+
+# ---------- concurrency protections ----------
+
+from datetime import datetime, timedelta, timezone
+
+
+def _now_gmt(minutes_ago=0):
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def test_recently_edited_draft_waits_unless_exempt():
+    c = cfg()
+    wp, ctl = FakeWP(DRAFT_RAW, modified_gmt=_now_gmt(3)), FakeControl()
+    res = process_post(Row(), wp, inventory(), {7: "Forward Deployed Engineering"}, FakeLLM(), c, ctl, False)
+    assert res["status"] == "waiting" and wp.updated is None and ctl.posts == []   # no sheet spam
+    res = process_post(Row(), wp, inventory(), {7: "Forward Deployed Engineering"}, FakeLLM(), c, ctl, False,
+                       skip_cooloff=True)                                           # event/manual run
+    assert res["status"] == "linked" and wp.updated
+
+
+def test_save_passes_version_stamp_and_conflict_is_retried():
+    from linker.wordpress import Conflict
+    c = cfg()
+    wp, ctl = FakeWP(DRAFT_RAW), FakeControl()
+    process_post(Row(), wp, inventory(), {7: "Forward Deployed Engineering"}, FakeLLM(), c, ctl, False)
+    assert wp.update_kwargs == {"expected_modified": "2026-01-01T00:00:00", "allow_published": False}
+
+    class ConflictWP(FakeWP):
+        def update_draft(self, pid, raw, **kw):
+            raise Conflict("saved by someone else")
+    wp, ctl = ConflictWP(DRAFT_RAW), FakeControl()
+    res = process_post(Row(), wp, inventory(), {7: "Forward Deployed Engineering"}, FakeLLM(), c, ctl, False)
+    assert res["status"] == "retry_later"
+    assert ctl.changes == [] and ctl.posts[-1][3] == "retry_later"   # not "linked" -> picked up next run
+
+
+class _SeqSession:
+    """Fake requests session: GETs return queued post states, POST records the payload."""
+    def __init__(self, states):
+        self.states, self.posted, self.auth, self.headers = list(states), None, None, {}
+
+    def get(self, url, params=None, timeout=None):
+        st = self.states.pop(0)
+        return _Resp(json.dumps({"id": 5, "status": st[0], "link": "u", "title": {"raw": "T"}, "categories": [],
+                                 "content": {"raw": "<p>x</p>"}, "modified_gmt": st[1]}))
+
+    def post(self, url, json=None, timeout=None):
+        import json as _j
+        self.posted = json
+        return _Resp(_j.dumps({"modified_gmt": "2026-02-02T00:00:00"}))
+
+
+def test_wordpress_refuses_stale_or_published_writes():
+    from linker.wordpress import Conflict, NotEditable, WordPress
+    wp = WordPress(BASE, "u", "p", ["draft", "pending"])
+    wp.s = _SeqSession([("draft", "2026-01-01T00:05:00")])
+    with pytest.raises(Conflict):
+        wp.update_draft(5, "<p>new</p>", expected_modified="2026-01-01T00:00:00")
+    wp.s = _SeqSession([("publish", "2026-01-01T00:00:00")])
+    with pytest.raises(NotEditable):
+        wp.update_draft(5, "<p>new</p>", expected_modified="2026-01-01T00:00:00")
+    wp.s = _SeqSession([("publish", "2026-01-01T00:00:00")])
+    assert wp.update_draft(5, "<p>new</p>", expected_modified="2026-01-01T00:00:00",
+                           allow_published=True) == "2026-02-02T00:00:00"
+    assert wp.s.posted == {"content": "<p>new</p>"}
+
+
+def test_link_check_records_removed_links_once():
+    from linker.main import check_live_links
+    c = cfg()
+
+    class Ctl:
+        def __init__(self): self.rows = []
+        def checked_post_ids(self): return {9}
+        def live_links(self):
+            return {1: {"title": "A", "urls": {BASE + "rlhf/", BASE + "nisq/"}, "linked_at": "2026-01-01 10:00 UTC"},
+                    2: {"title": "B", "urls": {BASE + "x/"}, "linked_at": "2026-01-01 10:00 UTC"},     # still a draft
+                    9: {"title": "C", "urls": {BASE + "y/"}, "linked_at": "2026-01-01 10:00 UTC"}}     # already checked
+        def log_link_check(self, row): self.rows.append(row)
+
+    class WP:
+        def get_draft(self, pid):
+            raw = f'<p><a href="{BASE}rlhf/">RLHF</a></p>' if pid == 1 else "<p>x</p>"
+            return {"status": "publish" if pid == 1 else "draft", "title": "T", "url": "u", "raw": raw}
+
+    ctl = Ctl()
+    res = check_live_links(ctl, WP(), c, now=datetime(2026, 1, 2, tzinfo=timezone.utc))
+    assert [r["post_id"] for r in res] == [1]
+    assert ctl.rows[0][5:] == [2, 1, BASE + "nisq/"]
+
+
+# ---------- backfill + event-triggered runs (wiring, with fakes) ----------
+
+def _secrets_env(monkeypatch):
+    for k, v in {"GEMINI_API_KEY": "x", "GOOGLE_SERVICE_ACCOUNT_JSON": "{}", "CONTROL_SHEET_ID": "c",
+                 "MASTERSHEET_ID": "m", "WP_USERNAME": "u", "WP_APP_PASSWORD": "p"}.items():
+        monkeypatch.setenv(k, v)
+
+
+class _Ctl(FakeControl):
+    def __init__(self, done=()):
+        super().__init__()
+        self._done = set(done)
+    def done_post_ids(self, statuses=("linked",)): return set(self._done)
+    def checked_post_ids(self): return set()
+    def live_links(self): return {}
+
+
+def test_backfill_picks_next_unprocessed_and_respects_dry_run(monkeypatch):
+    from linker import backfill
+    from linker.wordpress import PublishedPost
+    import linker.llm as llm_mod
+    _secrets_env(monkeypatch)
+    posts = [PublishedPost(i, BASE + f"p{i}/", f"Post {i}", [7], RENDERED) for i in (10, 11, 12, 13)]
+    ctl = _Ctl(done={10})
+    wp = FakeWP(DRAFT_RAW, status="publish")
+
+    class WP:
+        def __init__(self, *a): pass
+        def categories(self): return {7: "Forward Deployed Engineering"}
+        def published_posts(self): return posts
+        def get_draft(self, pid): return wp.get_draft(pid)
+        def update_draft(self, pid, raw, **kw): wp.update_draft(pid, raw, **kw)
+
+    class MS:
+        def __init__(self, *a): pass
+        def rows(self): return []
+
+    monkeypatch.setattr(backfill, "ControlSheet", lambda *a: ctl)
+    monkeypatch.setattr(backfill, "WordPress", WP)
+    monkeypatch.setattr(backfill, "build_inventory", lambda *a, **k: inventory())
+    monkeypatch.setattr("linker.sheets.MasterSheet", MS)
+    monkeypatch.setattr(llm_mod, "gemini_from_config", lambda *a, **k: FakeLLM())
+
+    backfill.main(["--next", "2"])                       # dry run
+    assert wp.updated is None
+    assert [p[0] for p in ctl.posts] == [11, 12]         # skips 10 (already done), takes the next two
+    assert all(k["mode"] == "backfill" for k in ctl.post_kwargs)
+
+    ctl.posts.clear(); ctl.post_kwargs.clear()
+    backfill.main(["--posts", BASE + "p11/", "--live"])  # apply the reviewed post
+    assert wp.updated and wp.update_kwargs["allow_published"] is True
+    assert ctl.posts[-1][0] == 11 and ctl.posts[-1][3] == "linked"
+
+
+def test_backfill_pick_by_category():
+    from linker.backfill import pick
+    from linker.wordpress import PublishedPost
+    posts = [PublishedPost(1, "u1", "A", [1], ""), PublishedPost(2, "u2", "B", [2], ""), PublishedPost(3, "u3", "C", [2], "")]
+    assert [p.id for p in pick(posts, {1: "Quantum Computing", 2: "Generative AI"}, {2}, [], 5, "generative ai")] == [3]
+
+
+def test_event_run_skips_cooloff_only_for_triggered_drafts(monkeypatch):
+    from linker import main as m
+    import linker.llm as llm_mod
+    _secrets_env(monkeypatch)
+    monkeypatch.setenv("DRY_RUN", "false")
+    fresh = _now_gmt(1)
+    drafts = {1940: FakeWP(DRAFT_RAW, modified_gmt=fresh), 1941: FakeWP(DRAFT_RAW, modified_gmt=fresh)}
+    ctl = _Ctl()
+
+    class WP:
+        def __init__(self, *a): pass
+        def categories(self): return {7: "Forward Deployed Engineering"}
+        def published_posts(self): return []
+        def get_draft(self, pid): return drafts[pid].get_draft(pid)
+        def update_draft(self, pid, raw, **kw): drafts[pid].update_draft(pid, raw, **kw)
+
+    def row(pid):
+        r = Row(); r = type("R", (), dict(vars(Row)))(); r.post_id = pid
+        r.content_status, r.publishing_status, r.topic = "Ready to Publish", "Yet to Publish", f"p{pid}"
+        return r
+
+    class MS:
+        def __init__(self, *a): pass
+        def rows(self): return [row(1940), row(1941)]
+
+    monkeypatch.setattr(m, "ControlSheet", lambda *a: ctl)
+    monkeypatch.setattr(m, "MasterSheet", MS)
+    monkeypatch.setattr(m, "WordPress", WP)
+    monkeypatch.setattr(m, "build_inventory", lambda *a, **k: inventory())
+    monkeypatch.setattr(m, "gemini_from_config", lambda *a, **k: FakeLLM())
+    monkeypatch.setattr(m, "OUT", __import__("pathlib").Path(str(__import__("tempfile").mkdtemp())))
+    m.main(["--event-post-id", "1940"])
+    assert drafts[1940].updated and drafts[1941].updated is None   # 1941 edited a minute ago, not triggered

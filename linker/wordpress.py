@@ -1,8 +1,10 @@
 """WordPress REST API client.
 
 Reads published posts to build the link inventory, and edits ONLY posts whose current status is
-in settings.wordpress.editable_statuses (draft/pending by default). Status is re-checked
-immediately before every write, so a post published in the meantime is never touched.
+in settings.wordpress.editable_statuses (draft/pending by default). Status and the post's
+modified stamp are re-checked immediately before every write: a post published or saved by
+someone else in the meantime is never overwritten. Published posts can only be edited by the
+explicit backfill (allow_published=True).
 """
 from __future__ import annotations
 
@@ -28,6 +30,10 @@ class PublishedPost:
 
 class NotEditable(Exception):
     pass
+
+
+class Conflict(Exception):
+    """The post changed (someone saved it, or its status changed) after we read it."""
 
 
 class WordPressError(Exception):
@@ -116,15 +122,18 @@ class WordPress:
         return list(posts.values())
 
     def get_draft(self, post_id: int) -> dict:
-        """Raw (editable) content of a post. Needs auth, so this also proves the credentials work."""
+        """Raw (editable) content of a post (draft or published). Needs auth, so this also proves
+        the credentials work. `modified_gmt` is the version stamp used to detect concurrent edits."""
         p = self._get(f"/posts/{post_id}", context="edit",
-                      _fields="id,status,link,title,categories,content").json()
+                      _fields="id,status,link,title,categories,content,modified_gmt").json()
         return {
             "id": p["id"],
             "status": p["status"],
+            "url": p.get("link", ""),
             "title": html.unescape(p["title"]["raw"] or p["title"].get("rendered", "")),
             "category_ids": p.get("categories", []),
             "raw": p["content"]["raw"],
+            "modified_gmt": p.get("modified_gmt", ""),
         }
 
     def published_post(self, url_or_id) -> dict:
@@ -148,9 +157,21 @@ class WordPress:
             "raw": p["content"]["rendered"],
         }
 
-    def update_draft(self, post_id: int, new_raw: str) -> None:
+    def update_draft(self, post_id: int, new_raw: str, expected_modified: str | None = None,
+                     allow_published: bool = False) -> str:
+        """Save new content, but only if the post is still in an editable state and nobody saved it
+        since we read it (`expected_modified`). Published posts are refused unless the caller is the
+        explicit backfill (`allow_published=True`). Returns the post's new modified stamp."""
         current = self.get_draft(post_id)
-        if current["status"] not in self.editable:
+        allowed = self.editable | ({"publish"} if allow_published else set())
+        if current["status"] not in allowed:
             raise NotEditable(f"post {post_id} is '{current['status']}', refusing to edit")
+        if expected_modified and current["modified_gmt"] != expected_modified:
+            raise Conflict(f"post {post_id} was saved by someone else at {current['modified_gmt']} UTC "
+                           f"after we read it ({expected_modified}); not overwriting")
         r = self.s.post(f"{self.api}/posts/{post_id}", json={"content": new_raw}, timeout=TIMEOUT)
         r.raise_for_status()
+        try:
+            return r.json().get("modified_gmt", "")
+        except ValueError:
+            return ""

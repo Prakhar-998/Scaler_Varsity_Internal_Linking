@@ -113,5 +113,43 @@ run the workflow manually with its post ID.
 
 Undo: open the draft in WordPress → Revisions → restore the revision before "Internal Linker".
 
-Note for editors: the bot saves the whole draft. If someone is editing that draft at the same moment,
-the last save wins, so finish edits before marking a row *Ready to Publish*.
+Editing at the same time is handled: the bot never saves over a newer version (it re-checks the
+post's "last modified" stamp right before saving and retries next run instead), and it skips drafts
+saved in the last 10 minutes. One case it can't see: an editor who opened the draft *before* the bot
+linked it and saves later will overwrite the links from their browser copy. The **Link Checks** tab
+shows when that happened. Simplest habit: finish edits before marking a row *Ready to Publish*.
+
+## 7. Instant trigger (optional, recommended)
+
+Without it, a new draft waits up to 30 minutes for the schedule, and could be published before the
+bot sees it. With it, the bot starts the moment the MasterSheet's Apps Script creates drafts.
+
+1. GitHub → your avatar → **Settings → Developer settings → Personal access tokens → Fine-grained
+   tokens → Generate new token**. Repository access: *Only select repositories* → this repo.
+   Repository permissions: **Contents: Read and write**. Copy the token.
+2. MasterSheet → **Extensions → Apps Script** → **+ → Script**, name it `trigger_internal_linker`,
+   paste `apps_script/trigger_internal_linker.gs`.
+3. Apps Script → **Project Settings → Script properties**: add `GITHUB_TOKEN` (the token) and
+   `GITHUB_REPO` = `Prakhar-998/Scaler_Varsity_Internal_Linking`.
+4. Run `testInternalLinkerTrigger` once and approve the permission prompt. GitHub → Actions →
+   *Internal linker* shows a run started by `repository_dispatch`.
+5. In the function that writes Draft Links, after the loop, add one call with all new post IDs:
+   `triggerInternalLinker(newPostIds);` (use `postIdFromDraftLink(link)` to get each ID).
+
+The 30-minute schedule stays on as a safety net.
+
+## 8. Backfilling published posts
+
+Actions → **Backfill published posts**. Every run is logged in **Processed** (`mode` = backfill) and
+**Changes**; a post that a *live* run linked, or found nothing to add to, is never picked by "next" again.
+
+1. **Try a few you know well:** paste 2–3 post URLs, keep *dry run* ticked, run. Read their rows in
+   **Changes** (original vs new sentence).
+2. **Apply them:** run again with the **same URLs** and *dry run* unticked. Check the live pages;
+   undo any post from WordPress → Revisions.
+3. **Batches:** leave URLs empty, set *next* to 5–10 (optionally a category), dry run first, then the
+   live run with the **post URLs from the dry run's summary** (so exactly the reviewed posts are
+   applied). Repeat until the run summary says 0 posts left.
+
+Drafts that got published before the bot reached them show as `skipped` in **Processed**; they aren't
+"done", so backfill picks them up too.

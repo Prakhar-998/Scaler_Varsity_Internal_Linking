@@ -23,7 +23,11 @@ POST_ID = re.compile(r"[?&]post=(\d+)")
 
 PROCESSED_TAB = "Processed"
 CHANGES_TAB = "Changes"
-PROCESSED_HEADER = ["post_id", "title", "category", "status", "links_added", "dry_run", "run_at", "notes"]
+PROCESSED_HEADER = ["post_id", "title", "category", "status", "links_added", "dry_run", "run_at", "notes",
+                    "mode", "url"]   # new columns go at the end so older rows stay aligned
+LINK_CHECKS_TAB = "Link Checks"
+LINK_CHECKS_HEADER = ["post_id", "title", "url", "linked_at", "checked_at", "links_added",
+                      "links_still_present", "missing_targets"]
 CHANGES_HEADER = ["post_id", "title", "block_index", "target_url", "anchor", "target_type",
                   "score", "original_sentence", "rewritten_sentence", "dry_run", "run_at"]
 
@@ -120,29 +124,68 @@ class ControlSheet:
         self._book = _client(service_account_json, WRITE_SCOPES).open_by_key(sheet_id)
         self.processed = self._ensure(PROCESSED_TAB, PROCESSED_HEADER)
         self.changes = self._ensure(CHANGES_TAB, CHANGES_HEADER)
+        self.link_checks = self._ensure(LINK_CHECKS_TAB, LINK_CHECKS_HEADER)
 
     def _ensure(self, title: str, header: list[str]):
         return ensure_tab(self._book, title, header)
 
-    def done_post_ids(self) -> set[int]:
-        """Posts already linked for real. Dry runs don't count, so they re-run once live."""
+    def processed_records(self) -> list[dict]:
+        return self.processed.get_all_records()
+
+    def done_post_ids(self, statuses=("linked",)) -> set[int]:
+        """Posts already handled for real (live runs only; dry runs don't count, so they re-run
+        once live). Drafts: "linked". Backfill also treats "no_links" as done."""
         done = set()
-        for rec in self.processed.get_all_records():
-            if str(rec.get("status")) == "linked" and str(rec.get("dry_run")).upper() != "TRUE":
+        for rec in self.processed_records():
+            if str(rec.get("status")) in statuses and not _truthy(rec.get("dry_run")):
                 try:
                     done.add(int(rec["post_id"]))
                 except (TypeError, ValueError):
                     pass
         return done
 
-    def log_post(self, post_id, title, category, status, links_added, dry_run, notes=""):
+    def log_post(self, post_id, title, category, status, links_added, dry_run, notes="",
+                 mode="draft", url=""):
         self.processed.append_row(
-            [post_id, title, category, status, links_added, dry_run, _now(), notes],
+            [post_id, title, category, status, links_added, dry_run, _now(), notes, mode, url],
             value_input_option="RAW")
+
+    def live_links(self) -> dict[int, dict]:
+        """Links actually written to WordPress (not dry runs), grouped by post:
+        {post_id: {"title", "urls": set, "linked_at": "YYYY-MM-DD HH:MM UTC"}} (latest live run)."""
+        out: dict[int, dict] = {}
+        for rec in self.changes.get_all_records():
+            if _truthy(rec.get("dry_run")):
+                continue
+            try:
+                pid = int(rec["post_id"])
+            except (TypeError, ValueError):
+                continue
+            entry = out.setdefault(pid, {"title": rec.get("title", ""), "urls": set(), "linked_at": ""})
+            if str(rec.get("run_at", "")) >= entry["linked_at"]:
+                entry["linked_at"] = str(rec.get("run_at", ""))
+            entry["urls"].add(str(rec.get("target_url", "")))
+        return out
+
+    def checked_post_ids(self) -> set[int]:
+        ids = set()
+        for rec in self.link_checks.get_all_records():
+            try:
+                ids.add(int(rec["post_id"]))
+            except (TypeError, ValueError):
+                pass
+        return ids
+
+    def log_link_check(self, row: list):
+        self.link_checks.append_row(row, value_input_option="RAW")
 
     def log_changes(self, rows: list[list]):
         if rows:
             self.changes.append_rows(rows, value_input_option="RAW")
+
+
+def _truthy(v) -> bool:
+    return str(v).strip().upper() in ("TRUE", "1", "YES")
 
 
 def _now() -> str:

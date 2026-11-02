@@ -69,22 +69,24 @@ def inventory():
 
 class FakeControl:
     def __init__(self):
-        self.posts, self.changes = [], []
+        self.posts, self.changes, self.post_kwargs = [], [], []
 
     def log_post(self, *a, **k):
         self.posts.append(a)
+        self.post_kwargs.append(k)
 
     def log_changes(self, rows):
         self.changes.extend(rows)
 
 
 class FakeWP:
-    def __init__(self, raw, status="draft"):
+    def __init__(self, raw, status="draft", modified_gmt="2026-01-01T00:00:00"):
         self.raw, self.status, self.updated = raw, status, None
+        self.modified_gmt, self.update_kwargs = modified_gmt, None
 
     def get_draft(self, pid):
-        return {"id": pid, "status": self.status, "title": "LLM Evals for FDEs",
-                "category_ids": [7], "raw": self.raw}
+        return {"id": pid, "status": self.status, "title": "LLM Evals for FDEs", "url": "",
+                "category_ids": [7], "raw": self.raw, "modified_gmt": self.modified_gmt}
 
-    def update_draft(self, pid, raw):
-        self.updated = raw
+    def update_draft(self, pid, raw, **kwargs):
+        self.updated, self.update_kwargs = raw, kwargs

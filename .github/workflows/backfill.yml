@@ -1,0 +1,61 @@
+name: Backfill published posts
+
+# Adds internal links to posts that are already live, in small batches you review first.
+# Dry run by default: proposals go to the control sheet (Processed + Changes tabs) only.
+# Untick "dry run" to apply the SAME posts after reviewing them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      posts:
+        description: "Specific post URLs, comma-separated (or leave empty and use 'next')"
+        required: false
+      next:
+        description: "How many not-yet-backfilled posts to take (ignored if URLs are given; max 30)"
+        required: false
+        default: "3"
+      category:
+        description: "With 'next': only this WordPress category (optional)"
+        required: false
+      dry_run:
+        description: "Dry run (log proposed links only, don't edit the live posts)"
+        type: boolean
+        default: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+concurrency:
+  group: linker-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Run backfill
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          MASTERSHEET_ID: ${{ secrets.MASTERSHEET_ID }}
+          CONTROL_SHEET_ID: ${{ secrets.CONTROL_SHEET_ID }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          POSTS: ${{ inputs.posts }}
+          NEXT: ${{ inputs.next }}
+          CATEGORY: ${{ inputs.category }}
+        run: |
+          args=()
+          if [ -n "$POSTS" ]; then args+=(--posts "$POSTS"); else args+=(--next "${NEXT:-3}"); fi
+          [ -n "$CATEGORY" ] && args+=(--category "$CATEGORY")
+          [ "${{ inputs.dry_run }}" = "false" ] && args+=(--live)
+          python -m linker.backfill "${args[@]}"

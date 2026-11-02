@@ -68,3 +68,6 @@ llm:
 
 run:
   max_posts_per_run: 5
+  cooloff_minutes: 10            # skip a draft someone saved this recently (they may still be editing)
+  link_check_after_minutes: 60   # after linking + publish, check the bot's links survived editing
+  link_checks_per_run: 15

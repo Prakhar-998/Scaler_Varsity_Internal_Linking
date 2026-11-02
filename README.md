@@ -96,6 +96,18 @@ formatting are untouched.
 - Reports flag posts where the writer linked the same page several times, and WordPress categories
   missing from `config/categories.yaml`.
 
+### Working alongside people
+- **Never overwrites someone's save:** the post's "last modified" stamp is recorded when it's read and
+  checked again right before saving. If anyone saved in between (or the status changed), nothing is
+  written; the post is logged `retry_later` and picked up on the next run from their version.
+- **Waits while someone is editing:** a draft saved in the last 10 minutes (`run.cooloff_minutes`) is
+  skipped until the next run. Drafts the MasterSheet just created are exempt when the instant trigger
+  names them.
+- **Notices removed links:** once a linked post is published (and an hour has passed), the bot records
+  in **Link Checks** how many of its links survived editing. It never re-adds removed links.
+- **Instant trigger:** the MasterSheet's Apps Script can start a run the moment it creates drafts
+  (`apps_script/trigger_internal_linker.gs`), instead of waiting up to 30 minutes for the schedule.
+
 ### Reliability
 - Gemini: `gemini-3.8-flash` with low thinking, 5-minute deadline, 2 retries on 429/5xx, then
   fallback models (`gemini-3.6-flash`, `gemini-3.5-flash-lite`).
@@ -118,7 +130,9 @@ GitHub's web editor (it renders as a table); the next run picks it up.
 
 ## Safety
 - **MasterSheet is never written to**: read-only OAuth scope, and the service account is only a Viewer.
-- **Only drafts are edited**: status is re-checked right before every write; published posts are refused.
+- **Only drafts are edited** by the scheduled linker: status is re-checked right before every write.
+  Published posts are edited only by the *Backfill* workflow, and only when its dry run is unticked.
+- **No lost edits**: a save is refused if the post changed since it was read (see above).
 - **Preview and audit can't edit anything**: the audit workflow doesn't receive WordPress credentials.
 - **Dry run until switched**: with `DRY_RUN=true` proposals only go to the control sheet.
 - **Fully reversible**: every update creates a WordPress revision ("Internal Linker" user).
@@ -127,13 +141,15 @@ GitHub's web editor (it renders as a table); the next run picks it up.
 
 | Workflow | What it does | Changes WordPress? |
 |---|---|---|
-| **Internal linker** | Every 30 min, Mon–Sat 09:30–21:00 IST: links drafts marked *Ready to Publish* that have a Draft Link. Manual runs can target one post ID. | Only when `DRY_RUN=false`, only drafts |
+| **Internal linker** | Every 30 min, Mon–Sat 09:30–21:00 IST, and instantly when the MasterSheet signals new drafts: links drafts marked *Ready to Publish* that have a Draft Link. Manual runs can target one post ID. | Only when `DRY_RUN=false`, only drafts |
+| **Backfill published posts** | Adds links to already-live posts in small batches: specific URLs or "next N" not yet done. Dry run by default. | Only with *dry run* unticked |
 | **Preview on a post** | One post (URL, edit link or ID) → before/after `preview.html` | Never |
 | **Audit live posts** | Random sample or chosen URLs → control-sheet tabs *Audit Summary* / *Audit Links* + before/after pages | Never |
 | **Tests** | Offline test suite on every push | Never |
 
-Control sheet tabs: **Processed** (one row per linked post), **Changes** (one row per link, original vs
-new sentence), **Audit Summary**, **Audit Links**.
+Control sheet tabs: **Processed** (one row per post handled; `mode` = draft or backfill), **Changes**
+(one row per link, original vs new sentence), **Link Checks** (did the links survive to publish),
+**Audit Summary**, **Audit Links**.
 
 ## Repo layout
 
@@ -143,6 +159,7 @@ linker/
   pipeline.py    one-article pipeline shared by runner, preview and audit
   preview.py     safe preview on any post -> before/after HTML report
   audit.py       batch audit of live posts -> control-sheet tabs + reports (read-only)
+  backfill.py    add links to published posts in tracked batches (dry run by default)
   sheets.py      MasterSheet reader (read-only) + control-sheet log
   wordpress.py   REST client: inventory reads, draft-only writes
   inventory.py   link targets + inbound-link counts
@@ -153,7 +170,8 @@ linker/
 config/          settings.yaml (weights, quotas, rules), program_pages.csv (programme pages),
                  categories.yaml (adjacent categories, pillar pages, anchor overrides)
 tests/           offline tests, many built from real preview/audit cases
-.github/workflows/  link.yml, preview.yml, audit.yml, tests.yml
+.github/workflows/  link.yml, backfill.yml, preview.yml, audit.yml, tests.yml
+apps_script/     trigger_internal_linker.gs (instant trigger, pasted into the MasterSheet's script)
 ```
 
 ## Running locally
@@ -166,6 +184,7 @@ python -m pytest -q                    # offline, no credentials needed
 python -m linker.preview --post https://www.interviewbit.com/varsity/blog/rlhf/   # needs GEMINI_API_KEY
 python -m linker.audit --sample 5      # needs Gemini + Google service account + CONTROL_SHEET_ID
 python -m linker.main --post-id 1573 --dry-run
+python -m linker.backfill --next 3     # dry run; add --live to apply
 ```
 
 ## Roadmap

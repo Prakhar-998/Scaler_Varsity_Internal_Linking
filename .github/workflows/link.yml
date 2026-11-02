@@ -4,6 +4,10 @@ on:
   schedule:
     # Every 30 min, 09:30-21:00 IST (04:00-15:30 UTC), Mon-Sat. GitHub may delay scheduled runs.
     - cron: "0,30 4-15 * * 1-6"
+  # Instant trigger: the MasterSheet's Apps Script sends this right after it creates a draft
+  # (see SETUP.md, "Instant trigger"). The run processes every ready draft, as a scheduled run does.
+  repository_dispatch:
+    types: [draft-created]
   workflow_dispatch:
     inputs:
       post_id:
@@ -44,9 +48,13 @@ jobs:
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
           # Scheduled runs follow the repo variable DRY_RUN (defaults to dry run until you set it to "false").
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && (inputs.dry_run && 'true' || 'false') || vars.DRY_RUN || 'true' }}
+          EVENT_POST_ID: ${{ github.event.client_payload.post_ids || github.event.client_payload.post_id }}
+          MANUAL_POST_ID: ${{ inputs.post_id }}
         run: |
-          if [ -n "${{ inputs.post_id }}" ]; then
-            python -m linker.main --post-id "${{ inputs.post_id }}"
+          if [ -n "$MANUAL_POST_ID" ]; then
+            python -m linker.main --post-id "$MANUAL_POST_ID"
+          elif [[ "$EVENT_POST_ID" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+            python -m linker.main --event-post-id "$EVENT_POST_ID"
           else
             python -m linker.main
           fi
