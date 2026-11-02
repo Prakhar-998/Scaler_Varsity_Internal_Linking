@@ -73,7 +73,7 @@ def process_post(row, wp, inventory, cat_names, llm, cfg, control, dry_run) -> d
                     a["anchor"], a["candidate"].target.type, a["candidate"].score,
                     a["original"], a["rewritten"], dry_run, run_at] for a in checked.accepted]
     control.log_changes(change_rows)
-    notes = [existing_note] + checked.notes
+    notes = [existing_note] + pipeline.hygiene_notes(a, cfg) + checked.notes
     if checked.rejected:
         notes.append(f"rejected {len(checked.rejected)}: " + "; ".join(sorted({r for _, r in checked.rejected})))
     status = "linked" if checked.accepted else "no_links"

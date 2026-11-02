@@ -112,6 +112,7 @@ def main(argv=None):
         notes, res = [], None
         try:
             a = pipeline.analyse(p.content_html, p.title, cats, keyword, p.id, inventory, cfg, url=p.url)
+            notes += pipeline.hygiene_notes(a, cfg)
             if a.skip_reason:
                 notes.append(a.skip_reason)
             else:

@@ -135,9 +135,10 @@ def test_validation_rejects_bad_edits():
     ]
     res = validate.check(edits, ids, p, n, c.settings)
     reasons = [r for _, r in res.rejected]
-    assert reasons[:4] == ["unknown sentence_id", "unknown target_id", "generic anchor",
-                           "rewrite introduced new numbers"]
-    assert reasons[4] == "rewrite changed too much" or reasons[4].startswith("rewrite adds words")
+    assert reasons[:3] == ["unknown sentence_id", "unknown target_id", "generic anchor"]
+    assert reasons[3] in ("rewrite introduced new numbers", "program link changed the writer's words "
+                          "(only inserting a short phrase is allowed)")
+    assert reasons[4] == "rewrite changed too much" or reasons[4].startswith(("rewrite adds words", "program link"))
     assert not res.accepted and "required program link not placed" in res.notes
 
 
@@ -158,7 +159,7 @@ class FakeLLM:
              "rewritten": "Prompt injection is one of the risks that forward deployed engineers have to defend against on every customer project they take on."},
             {"sentence_id": sid_tr, "target_id": tid["IIT Delhi - AI Forward Deployed Engineering"],
              "anchor": "forward deployed engineering programme",
-             "rewritten": "Many engineers build these skills through a structured forward deployed engineering programme rather than on the job alone, because the feedback loop is faster."},
+             "rewritten": "Many engineers build these skills through structured training, such as a forward deployed engineering programme, rather than on the job alone, because the feedback loop is faster."},
         ]
 
 
@@ -272,7 +273,8 @@ def test_validator_blocks_new_links_next_to_each_other():
     ]
     res = validate.check(edits, ids, p, 3, c.settings)
     assert len(res.accepted) == 1
-    assert res.rejected[0][1] in {"too close to another link", "paragraph already has a new link"}
+    assert res.rejected[0][1] in {"too close to another link", "paragraph already has a new link",
+                                  "program link in a sentence that isn't about learning or the programme's topic"}
 
 
 # ---------- program pages file ----------
@@ -566,7 +568,7 @@ def test_forced_topic_insertion_rejected():
     orig = "Quantum phase describes which way a state's complex amplitude points, not how big it is."
     res = _single("superposition in quantum computing", orig,
                   "Central to superposition in quantum computing, quantum phase describes which way a state's complex amplitude points, not how big it is.")
-    assert res.rejected and "forced insertion" in res.rejected[0][1]
+    assert res.rejected and res.rejected[0][1] == "blog links must use the writer's own words (anchor isn't in the sentence)"
 
 
 def test_common_words_dont_make_anchors_similar():
@@ -588,7 +590,7 @@ def test_punctuation_only_rewrite_rejected():
     orig = "That is why full-scale QPE is hard on today's noisy intermediate-scale quantum (NISQ) hardware."
     res = _single("NISQ hardware", orig, orig.replace("(NISQ) hardware", "(NISQ hardware)"),
                   target_title="NISQ Explained", kws=("nisq",))
-    assert res.rejected and res.rejected[0][1] == "rewrite only changed punctuation"
+    assert res.rejected and res.rejected[0][1] in ("rewrite only changed punctuation", "blog links must use the writer's own words (anchor isn't in the sentence)")
 
 
 def test_verbatim_anchor_keeps_writer_sentence():
@@ -616,7 +618,7 @@ def test_padding_words_rejected_for_blog_links():
     res = _single("perplexity in NLP", orig,
                   "LIMA's authors found validation perplexity in NLP benchmarks did not track generation quality.",
                   target_title="Perplexity in NLP", kws=("perplexity in nlp",), common=())
-    assert res.rejected and res.rejected[0][1].startswith("rewrite adds words beyond the anchor (benchmark")
+    assert res.rejected and res.rejected[0][1] == "blog links must use the writer's own words (anchor isn't in the sentence)"
 
 
 def test_case_insensitive_anchor_keeps_original():
@@ -702,3 +704,61 @@ def test_audit_sample_spreads_across_categories():
     assert [p.id for p in pick_posts(posts, {1: "A", 2: "B"}, 4, None, 1, [])] == [p.id for p in chosen]  # seed repeats
     only_b = pick_posts(posts, {1: "A", 2: "B"}, 3, "b", seed=2, explicit=[])
     assert all(p.category_ids == [2] for p in only_b)
+
+
+
+# ---------- cases from the first live-post audit ----------
+
+def test_blog_link_cannot_replace_or_flip_writer_words():
+    for orig, bad, anchor in [
+        ("Today, the clearest opportunities are campaign orchestration, paid-media optimisation, lifecycle journeys.",
+         "Today, the clearest opportunities are campaign orchestration, performance marketing optimisation, lifecycle journeys.",
+         "performance marketing"),
+        ("Traditional marketing automation follows predefined rules, while an AI agent can decide what to do next.",
+         "Traditional AI marketing automation follows predefined rules, while an AI agent can decide what to do next.",
+         "AI marketing automation"),
+    ]:
+        res = _single(anchor, orig, bad, target_title="Some Page", kws=(anchor.lower(),), common=())
+        assert not res.accepted and "writer's own words" in res.rejected[0][1]
+
+
+def _program_single(orig, rewritten, anchor="generative AI course"):
+    from linker.content import ParsedDraft, Sentence
+    s = Sentence("p5.s0", 5, orig, orig, 20)
+    parsed = ParsedDraft("", {}, {"p5.s0": s}, 1000, [], set(), {})
+    t = Target("https://www.interviewbit.com/varsity/iit-delhi/generative-ai", "IIT Delhi - Generative AI",
+               "program", ["Generative AI"], ["generative AI programme", "generative AI course"], program_id="genai")
+    ids = {"T1": scoring.Candidate(t, 1, 1, "same", None, required=True)}
+    return validate.check([{"sentence_id": "p5.s0", "target_id": "T1", "anchor": anchor, "rewritten": rewritten}],
+                          ids, parsed, 3, cfg().settings, None, "Cursor vs Claude Code", set())
+
+
+def test_program_link_rules():
+    # forced into an unrelated sentence
+    r = _program_single("The skill being built here is not tool operation.",
+                        "The skill being built here, much like in a generative AI course, is not tool operation.")
+    assert "isn't about learning" in r.rejected[0][1]
+    # changed the writer's words (dropped the quotes)
+    r = _program_single("Every engineer added “prompt engineering” to their career profile in the last two years.",
+                        "Every engineer added prompt engineering to their career profile after a generative AI course in the last two years.")
+    assert "changed the writer's words" in r.rejected[0][1]
+    # clean insertion into a learning sentence is fine
+    r = _program_single("Most engineers pick up these skills through structured training rather than on the job.",
+                        "Most engineers pick up these skills through structured training, like a generative AI course, rather than on the job.")
+    assert r.accepted
+
+
+def test_title_phrase_doesnt_collapse_to_ai():
+    from linker.inventory import _title_phrase as t
+    assert t("AI for SEO: Tools, Workflows & What Actually Works") == "ai for seo"
+    assert t("AI in Marketing Course: Syllabus, Tools, Fees") == "ai in marketing course"
+
+
+def test_existing_links_counted_once_and_images_ignored():
+    raw = ("<p>Intro text that is long enough to be skipped by the linker here.</p>"
+           "<p>See the <a href='https://www.interviewbit.com/varsity/iit-delhi/ai-product-management/'>programme</a> now.</p>"
+           "<p><a href='https://www.interviewbit.com/varsity/iit-delhi/ai-product-management/'><img src='x.png'></a></p>"
+           "<p>Again the <a href='https://www.interviewbit.com/varsity/iit-delhi/ai-product-management/'>AI PM programme</a>.</p>")
+    p = content.parse(raw, SETTINGS_SKIP, internal_prefixes=["https://www.interviewbit.com/varsity/"])
+    assert p.existing_internal == 1
+    assert list(p.duplicate_internal.values()) == [3]

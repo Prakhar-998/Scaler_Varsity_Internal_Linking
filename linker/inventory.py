@@ -36,6 +36,8 @@ class Target:
 _TITLE_CUT = {"explained", "explain", "simply", "step", "made", "guide", "tutorial", "in", "for",
               "with", "better", "beginner", "beginners", "basics", "overview", "everything",
               "why", "how", "what", "when", "you", "your", "like", "-", "–", "—", "|"}
+_PREPOSITIONS = {"in", "for", "with"}
+_PREPOSITION_CUT_GENERIC = {"data", "cloud", "model", "models", "agents", "career", "jobs"}
 _TITLE_LEAD = {"the", "a", "an", "inside", "understanding", "intro", "introduction", "to", "best", "top"}
 
 
@@ -54,6 +56,14 @@ def _title_phrase(title: str) -> str | None:
             break
         out.append(w)
     phrase = " ".join(out).strip().lower()
+    if len(out) == 1 and (len(out[0]) <= 3 or out[0].lower() in _PREPOSITION_CUT_GENERIC):
+        # "AI for SEO" must not collapse to "ai": keep going past prepositions instead.
+        out = []
+        for w in words:
+            if w.lower() in _TITLE_CUT - _PREPOSITIONS:
+                break
+            out.append(w)
+        phrase = " ".join(out[:6]).strip().lower()
     return phrase if 1 <= len(phrase.split()) <= 6 else None
 
 

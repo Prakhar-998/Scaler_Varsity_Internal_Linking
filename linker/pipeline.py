@@ -145,3 +145,15 @@ def repair_note(checked, ids, missing: int) -> str:
             f"These proposals were rejected by the validator:\n{bad}\n"
             f"Propose up to {missing} NEW edits that fix these problems, using other targets or other "
             "sentences if needed. Skip rather than force. Return JSON in the same format with only the new edits.")
+
+
+def hygiene_notes(a: Analysis, cfg: Config) -> list[str]:
+    """Findings worth showing the team even when no link is added."""
+    notes = []
+    known = {c for p in cfg.programs for c in p.categories} | set(cfg.adjacent)
+    unknown = [c for c in a.draft.categories if c not in known]
+    if unknown:
+        notes.append(f"category not in config (no programme / adjacency): {', '.join(unknown)}")
+    for url, count in a.parsed.duplicate_internal.items():
+        notes.append(f"writer links {url} {count}x (image/banner links included)")
+    return notes

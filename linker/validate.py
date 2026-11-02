@@ -81,6 +81,41 @@ def _added_words(original: str, rewritten: str, anchor: str) -> set[str]:
     return content_tokens(rewritten) - content_tokens(original) - content_tokens(anchor)
 
 
+LEARNING_WORDS = {"course", "courses", "programme", "programmes", "program", "programs", "certification",
+                  "certifications", "certificate", "certificates", "training", "upskill", "upskilling",
+                  "learn", "learning", "learner", "learners", "study", "studying", "degree", "curriculum",
+                  "bootcamp", "career", "careers", "syllabus", "cohort"}
+
+
+def _pure_insertion(original: str, rewritten: str) -> bool:
+    """True if `rewritten` is `original` with one span inserted and nothing else changed."""
+    if len(rewritten) < len(original):
+        return False
+    p = 0
+    while p < len(original) and original[p] == rewritten[p]:
+        p += 1
+    q = 0
+    while q < len(original) - p and original[-1 - q] == rewritten[-1 - q]:
+        q += 1
+    return p + q >= len(original)
+
+
+def program_problem(original: str, rewritten: str, anchor: str, target, max_added: int) -> str | None:
+    """Program links may add a short phrase, but only where the writer is already talking about
+    learning/courses (or the programme's own topic), and only by inserting - never by replacing."""
+    if rewritten == original:
+        return None
+    words = {w.lower() for w in re.findall(r"[A-Za-z]+", original)}
+    topic = content_tokens(" ".join(target.keywords[:2])) - {"programme", "program", "course", "certification"}
+    if not (words & LEARNING_WORDS or content_tokens(original) & topic):
+        return "program link in a sentence that isn't about learning or the programme's topic"
+    if not _pure_insertion(original, rewritten):
+        return "program link changed the writer's words (only inserting a short phrase is allowed)"
+    if len(_added_words(original, rewritten, "")) > max_added:
+        return "program link inserted too many words"
+    return None
+
+
 def _share_in(anchor: str, original: str) -> float:
     """Share of the anchor's content words that the writer's sentence already contained. A blog
     link should sit on what the sentence is already about, not on a topic the LLM bolted on."""
@@ -150,10 +185,15 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
         elif any(_overlap(content_tokens(anchor) - common, content_tokens(a["anchor"]) - common) >= 0.6
                  for a in accepted):
             reason = "anchor too similar to another new link"
+        elif cand.target.type != "program" and lk.get("blog_anchor_verbatim", True) and rewritten != s.text:
+            reason = "blog links must use the writer's own words (anchor isn't in the sentence)"
         elif cand.target.type != "program" and _share_in(anchor, s.text) < 0.5:
             reason = "anchor topic isn't in the original sentence (forced insertion)"
-        elif len(_added_words(s.text, rewritten, anchor)) > (2 if cand.target.type == "program" else 0):
+        elif cand.target.type != "program" and _added_words(s.text, rewritten, anchor):
             reason = "rewrite adds words beyond the anchor (" + ", ".join(sorted(_added_words(s.text, rewritten, anchor))) + ")"
+        elif cand.target.type == "program" and (bad := program_problem(s.text, rewritten, anchor, cand.target,
+                                                                       lk.get("program_max_added_words", 6))):
+            reason = bad
         elif any((content_tokens(anchor) & content_tokens(a["anchor"])) - common
                  for a in accepted):
             reason = "anchor repeats a term already linked in this article"

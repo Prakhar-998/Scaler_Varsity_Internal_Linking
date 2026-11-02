@@ -36,6 +36,9 @@ linking:
   program_links_max: 2
   same_category_min_share: 0.6
   max_candidates_for_llm: 14
+  # Wording rules
+  blog_anchor_verbatim: true        # blog links: anchor must be words already in the sentence
+  program_max_added_words: 6        # program links may insert a short phrase (learning-related sentences only)
   # Spacing / hygiene
   max_new_links_per_paragraph: 1
   max_total_links_per_paragraph: 2  # existing + new links in one paragraph

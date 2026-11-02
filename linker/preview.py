@@ -172,7 +172,7 @@ def main(argv=None):
     cats = category_names(post["category_ids"], cat_names, [])
     a = pipeline.analyse(post["raw"], post["title"], cats, keyword, post["id"], inventory, cfg,
                          url=post.get("url", ""))
-    notes = [a.existing_note]
+    notes = [a.existing_note] + pipeline.hygiene_notes(a, cfg)
     if post["status"] == "publish":
         notes.append("This is a published post, used as a test subject. Its own existing links count "
                      "toward the budget, so fewer new links may be planned than for a fresh draft.")

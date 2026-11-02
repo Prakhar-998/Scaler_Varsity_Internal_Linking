@@ -69,11 +69,22 @@ class ParsedDraft:
 
     @property
     def existing_internal(self) -> int:
-        return sum(1 for e in self.existing if e.kind == "internal")
+        """Unique internal pages linked from text. Image/banner links (no anchor text) and repeat
+        links to the same page don't use up the budget."""
+        return len({e.url for e in self.existing if e.kind == "internal" and e.anchor.strip()})
 
     @property
     def existing_external(self) -> int:
-        return sum(1 for e in self.existing if e.kind == "external")
+        return len({e.url for e in self.existing if e.kind == "external" and e.anchor.strip()})
+
+    @property
+    def duplicate_internal(self) -> dict[str, int]:
+        """Internal URLs the writer linked more than once (hygiene finding for the report)."""
+        counts: dict[str, int] = {}
+        for e in self.existing:
+            if e.kind == "internal":
+                counts[e.url] = counts.get(e.url, 0) + 1
+        return {u: c for u, c in counts.items() if c > 1}
 
 
 def _in_ranges(pos: int, ranges) -> bool:

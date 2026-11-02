@@ -60,8 +60,8 @@ def relevance(target: Target, draft: Draft) -> tuple[float, str | None]:
     best, hint = 0.0, None
     for kw in target.keywords:
         kt = tokens(kw)
-        if not kt:
-            continue
+        if not kt or (len(kt) == 1 and len(kt[0]) <= 3):
+            continue                     # "ai", "llm": far too common to signal relevance
         if any(contains_phrase(st, kt) for st in sent_toks):
             return 1.0, kw                                   # exact phrase present: best case
         kset = set(kt)

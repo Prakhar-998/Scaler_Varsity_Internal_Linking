@@ -31,9 +31,13 @@ RULES
 - Link each concept at most once per article.
 - Each anchor must be distinct; don't link two different pages with near-identical wording.
 - Vary anchors; don't reuse the exact same wording as the target's page title.
-- Prefer anchoring words the sentence already contains; then leave the sentence unchanged.
-- If you must rewrite for an internal blog link, add ONLY the anchor words: no extra words like
-  "popular", "techniques like" or "benchmarks".
+- BLOG targets: the anchor MUST be words the sentence already contains, and "rewritten" must be the
+  sentence exactly as given. Never insert, replace or reorder words for a blog link. If no sentence
+  already mentions a blog target's topic, skip that target.
+- PROGRAM targets: prefer a sentence that already mentions the programme topic or learning
+  (course, certification, training, upskilling, career). You may INSERT a short phrase (max 6 words)
+  containing the anchor; never delete or change the writer's words, punctuation or quotes. If no
+  sentence is about learning or the programme's topic, skip the programme link.
 - Keep the rewrite minimal: same meaning, same facts, same tone. Do not add numbers, claims, names or statistics that are not in the original sentence. Add at most about 15 words.
 - The "rewritten" sentence must contain the anchor text exactly once, character for character.
 - Plain text only in "rewritten" (no HTML, no markdown).
