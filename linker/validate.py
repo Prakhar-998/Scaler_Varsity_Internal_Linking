@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from .content import ParsedDraft
 from .scoring import Candidate
-from .text import STOPWORDS, content_tokens, similarity, tokens
+from .text import STOPWORDS, content_tokens, similarity, split_sentences, tokens
 
 GENERIC_ANCHORS = {"click here", "read more", "here", "this article", "this post", "learn more",
                    "this guide", "this link", "check this out"}
@@ -46,6 +46,12 @@ def anchor_problem(anchor: str, target, own_text: str) -> str | None:
     target_tok = content_tokens(" ".join(target.keywords + [target.title]))
     if not a_tok & target_tok:
         return "anchor doesn't describe the target page"
+    # The anchor's main word (its last content word: "logistics COSTS", "operations MANAGER") must be
+    # the target's topic. One shared side word isn't enough: "logistics costs" or "logistics
+    # executives" is not an anchor for a page about next-gen logistics.
+    ordered = [t for t in tokens(anchor) if t not in STOPWORDS and len(t) > 1]
+    if len(ordered) >= 2 and ordered[-1] not in target_tok:
+        return "anchor's main word doesn't describe the target page"
     own_bi = _bigrams(tokens(own_text))
     for bi in _bigrams(tokens(anchor)):
         if bi in own_bi and not set(bi) <= target_tok:
@@ -105,6 +111,8 @@ def program_problem(original: str, rewritten: str, anchor: str, target, max_adde
     learning/courses (or the programme's own topic), and only by inserting - never by replacing."""
     if rewritten == original:
         return None
+    if max_added <= 0:
+        return "program links must use the writer's own words (no inserted phrase)"
     words = {w.lower() for w in re.findall(r"[A-Za-z]+", original)}
     topic = content_tokens(" ".join(target.keywords[:2])) - {"programme", "program", "course", "certification"}
     if not (words & LEARNING_WORDS or content_tokens(original) & topic):
@@ -182,6 +190,8 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
             reason = "generic anchor"
         elif (bad := anchor_problem(anchor, cand.target, own_text)):
             reason = bad
+        elif content_tokens(anchor) and any(content_tokens(anchor) == content_tokens(a["anchor"]) for a in accepted):
+            reason = "same anchor words already link to another page"
         elif any(_overlap(content_tokens(anchor) - common, content_tokens(a["anchor"]) - common) >= 0.6
                  for a in accepted):
             reason = "anchor too similar to another new link"
@@ -192,7 +202,7 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
         elif cand.target.type != "program" and _added_words(s.text, rewritten, anchor):
             reason = "rewrite adds words beyond the anchor (" + ", ".join(sorted(_added_words(s.text, rewritten, anchor))) + ")"
         elif cand.target.type == "program" and (bad := program_problem(s.text, rewritten, anchor, cand.target,
-                                                                       lk.get("program_max_added_words", 6))):
+                                                                       lk.get("program_max_added_words", 0))):
             reason = bad
         elif any((content_tokens(anchor) & content_tokens(a["anchor"])) - common
                  for a in accepted):
@@ -229,3 +239,33 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
     if any(c.required and c.target.url not in placed for c in ids.values()):
         notes.append("required program link not placed")
     return Checked(accepted, rejected, notes)
+
+
+# ---------- programme bridge sentence: one NEW sentence appended to a paragraph ----------
+
+BRIDGE_BANNED = {"best", "top", "leading", "guarantee", "guaranteed", "placement", "placements", "salary",
+                 "salaries", "click", "premier", "world", "class", "unmatched", "hike", "assured"}
+
+
+def bridge_problem(sentence: str, anchor: str, target, last_sentence: str, max_words: int) -> str | None:
+    """The added sentence must be short, plain, claim-free, and carry one of the programme's own
+    anchor phrases (program_pages.csv `anchors`) exactly once."""
+    allowed = [a.lower() for a in target.extras.get("bridge_anchors", []) or target.keywords]
+    if anchor.lower() not in allowed:
+        return "added sentence must use one of the programme's anchor phrases"
+    if sentence.count(anchor) != 1:
+        return "anchor not present exactly once in the added sentence"
+    words = len(sentence.split())
+    if not 10 <= words <= max_words:
+        return "added sentence length out of range"
+    if len(split_sentences(sentence)) != 1 or not sentence.rstrip().endswith("."):
+        return "added text must be one plain sentence"
+    if any(ch.isdigit() for ch in sentence) or "%" in sentence:
+        return "added sentence contains numbers"
+    if any(ch in sentence for ch in "<>[]#*"):
+        return "markup in added sentence"
+    if {w.lower() for w in re.findall(r"[A-Za-z]+", sentence)} & BRIDGE_BANNED:
+        return "added sentence makes a promotional claim"
+    if last_sentence and similarity(sentence, last_sentence) > 0.7:
+        return "added sentence repeats the paragraph"
+    return None

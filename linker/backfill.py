@@ -3,13 +3,18 @@
     python -m linker.backfill --posts "https://.../rlhf/, https://.../dmaic-methodology/"   # dry run
     python -m linker.backfill --posts "https://.../rlhf/" --live                             # apply
     python -m linker.backfill --next 10 [--category "Generative AI"] [--live]
+    python -m linker.backfill --posts "https://.../rlhf/" --apply-reviewed                   # apply the dry run
 
 Same pipeline and rules as drafts. Differences:
   - it may edit published posts (only here, only with --live);
   - progress is tracked in the control sheet's "Processed" tab with mode = backfill: a post that was
     linked (or found to have nothing to add) by a LIVE run is never picked again by --next;
   - every proposed/applied link goes to the "Changes" tab, like drafts.
-Dry run is the default: review the Changes rows, then run the same posts again with --live.
+Dry run is the default. Then either:
+  --apply-reviewed  apply exactly the links that dry run proposed (as they stand in the Changes tab:
+                    delete a row there to reject that link). No new Gemini call, so what you
+                    reviewed is what goes live; each link is re-checked against the current post.
+  --live            run Gemini again and apply its links (they may differ from the dry run).
 """
 from __future__ import annotations
 
@@ -53,8 +58,12 @@ def main(argv=None):
     ap.add_argument("--posts", default="", help="comma/newline-separated published post URLs")
     ap.add_argument("--next", type=int, default=0, help="the next N published posts not yet backfilled")
     ap.add_argument("--category", default="", help="with --next: only this WordPress category")
-    ap.add_argument("--live", action="store_true", help="apply the links (default: dry run, log only)")
+    ap.add_argument("--live", action="store_true", help="ask Gemini again and apply (default: dry run, log only)")
+    ap.add_argument("--apply-reviewed", action="store_true",
+                    help="apply exactly the links from each post's latest dry run (Changes tab)")
     args = ap.parse_args(argv)
+    if args.apply_reviewed:
+        args.live = True
 
     explicit = [u.strip() for u in re.split(r"[,\n]+", args.posts) if u.strip()]
     if not explicit and args.next <= 0:
@@ -62,7 +71,8 @@ def main(argv=None):
     cfg = load_config()
     sec = cfg.secrets
     dry_run = not args.live
-    print(f"[backfill] {'LIVE: published posts will be edited' if args.live else 'dry run: nothing is edited'}",
+    print("[backfill] " + ("APPLY REVIEWED: dry-run links go live as reviewed" if args.apply_reviewed else
+                           "LIVE: published posts will be edited" if args.live else "dry run: nothing is edited"),
           flush=True)
 
     control = ControlSheet(sec["GOOGLE_SERVICE_ACCOUNT_JSON"], sec["CONTROL_SHEET_ID"])
@@ -76,14 +86,20 @@ def main(argv=None):
     posts = wp.published_posts()
     inventory = build_inventory(posts, cat_names, rows, cfg)
     done = control.done_post_ids(DONE_STATUSES)
-    chosen = pick(posts, cat_names, done, explicit, min(args.next, 30) or len(explicit),
+    pool = posts
+    if args.apply_reviewed and not explicit:
+        reviewed_ids = control.dry_run_post_ids()      # "next N" = next N that have a dry run to apply
+        pool = [p for p in posts if p.id in reviewed_ids]
+    chosen = pick(pool, cat_names, done, explicit, min(args.next, 30) or len(explicit),
                   args.category or None)
     remaining = sum(1 for p in posts if p.id not in done)
     print(f"[backfill] {len(chosen)} post(s) this batch; {remaining} published posts not yet backfilled",
           flush=True)
 
-    from .llm import gemini_from_config
-    llm = gemini_from_config(cfg, sec)
+    llm = None
+    if not args.apply_reviewed:
+        from .llm import gemini_from_config
+        llm = gemini_from_config(cfg, sec)
     report = []
     for p in chosen:
         if p.id in done:
@@ -92,9 +108,17 @@ def main(argv=None):
         row = SheetRow(tab="(backfill)", topic=p.title, primary_keyword=kw_by_url.get(norm_url(p.url), ""),
                        content_status="", publishing_status="published",
                        draft_link=f"post.php?post={p.id}", live_link=p.url, wp_categories=[])
+        reviewed = None
+        if args.apply_reviewed:
+            reviewed = control.reviewed_edits(p.id)
+            if reviewed is None:
+                print(f"[backfill] {p.title}: no dry run to apply; run a dry run first", flush=True)
+                report.append({"post_id": p.id, "title": p.title, "url": p.url, "status": "skipped",
+                               "reason": "no dry run to apply"})
+                continue
         try:
             res = process_post(row, wp, inventory, cat_names, llm, cfg, control, dry_run,
-                               mode="backfill", allow_published=True)
+                               mode="backfill", allow_published=True, reviewed=reviewed)
         except NotEditable as e:
             res = {"post_id": p.id, "status": "skipped", "reason": str(e)}
         except Exception as e:  # one bad post must not stop the batch
@@ -112,7 +136,7 @@ def main(argv=None):
 
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
-            fh.write(f"## Backfill ({'live' if args.live else 'dry run'})\n\n| Post | Status | Links |\n|---|---|---|\n")
+            fh.write(f"## Backfill ({'apply reviewed' if args.apply_reviewed else 'live' if args.live else 'dry run'})\n\n| Post | Status | Links |\n|---|---|---|\n")
             for r in report:
                 fh.write(f"| [{r['title']}]({r['url']}) | {r['status']} | {len(r.get('accepted', []))} |\n")
             fh.write(f"\n{remaining} published posts not yet backfilled. Review each link in the control "

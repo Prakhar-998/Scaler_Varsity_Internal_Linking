@@ -8,8 +8,8 @@ from dataclasses import dataclass, field
 from . import content, scoring, validate
 from .config import Config
 from .inventory import Target
-from .llm import build_prompt
-from .text import contains_phrase, content_tokens, tokens
+from .llm import build_bridge_prompt, build_prompt
+from .text import contains_phrase, content_tokens, norm_url, tokens
 
 
 @dataclass
@@ -113,7 +113,8 @@ def propose(a: Analysis, llm, cfg: Config, link_attrs: str = "") -> Result:
     """Ask the LLM for edits, validate them, and build the new post content (not saved anywhere).
     If some edits are rejected, one repair round asks for replacements, with the reasons."""
     offered = select_sentences(a.offered, a.shortlist, cfg.get("llm", "max_sentences_for_llm", default=40))
-    prompt, ids = build_prompt(a.draft.title, a.n, a.shortlist, offered)
+    prompt, ids = build_prompt(a.draft.title, a.n, a.shortlist, offered,
+                               cfg.get("linking", "program_max_added_words", default=0))
     own_text = f"{a.draft.title} {a.draft.primary_keyword}"
 
     def run_check(edits):
@@ -131,8 +132,167 @@ def propose(a: Analysis, llm, cfg: Config, link_attrs: str = "") -> Result:
         checked = run_check(kept + llm.propose(repair))
         all_rejected += [(e, f"{r} (2nd pass)") for e, r in checked.rejected]
     checked.rejected = all_rejected
+    add_bridge(a, checked, llm, cfg)
     new_raw = content.apply_edits(a.parsed, checked.accepted, link_attrs) if checked.accepted else None
     return Result(checked, new_raw, prompt)
+
+
+def _norm(t: str) -> str:
+    return " ".join(t.split())
+
+
+def bridge_paragraphs(a: Analysis, accepted: list[dict], cand, cfg: Config) -> dict[str, tuple]:
+    """Paragraphs that may get the programme's added sentence: {pid: (block, fit, text, last_sentence)}.
+    Up to 4 "BEST FIT" paragraphs (about learning, skills or the programme's topic) plus the
+    conclusion as "LAST RESORT". Same spacing rules as any other link: no links already in the
+    paragraph, none in or next to its last sentence."""
+    gap = cfg.get("linking", "min_sentence_gap", default=1)
+    parsed = a.parsed
+    used = {e.get("block", parsed.sentences[e["sentence_id"]].block if e["sentence_id"] in parsed.sentences else -1)
+            for e in accepted}
+    linked = set(parsed.linked_orders) | {parsed.sentences[e["sentence_id"]].order for e in accepted
+                                          if not e.get("added") and e["sentence_id"] in parsed.sentences}
+    topic = content_tokens(" ".join(cand.target.keywords))
+    options = []
+    for b in sorted({s.block for s in a.offered.values()}):
+        if b in used or parsed.para_link_count.get(b, 0) > 0:
+            continue
+        p = parsed.paragraphs[b]
+        last = content.last_sentence(p)
+        tail = max((s for s in parsed.sentences.values() if s.block == b), key=lambda s: s.order)
+        if _norm(tail.text) != _norm(last) or tail.id not in a.offered:
+            continue                       # paragraph ends in a formatted/short sentence: leave it
+        if any(abs(tail.order + 0.5 - o) <= gap for o in linked):
+            continue
+        text = content.paragraph_text(p)
+        words = {w.lower() for w in text.split()}
+        score = len(content_tokens(text) & topic) + 2 * len(words & validate.LEARNING_WORDS)
+        options.append((b, score, text, last))
+    if not options:
+        return {}
+    conclusion = options[-1]
+    best = sorted([o for o in options[:-1] if o[1] > 0], key=lambda o: -o[1])[:4]
+    chosen = sorted(best, key=lambda o: o[0]) + [conclusion]
+    return {f"B{o[0]}": (o[0], "LAST RESORT" if o is conclusion else "BEST FIT", o[2][:700], o[3])
+            for o in chosen}
+
+
+def _bridge_edit(e: dict, cand, paras: dict, a: Analysis, cfg: Config):
+    """Validate one proposed added sentence; returns (accepted_edit, None) or (None, reason)."""
+    pid, sentence = str(e.get("paragraph_id", "")), _norm(str(e.get("sentence", "")))
+    anchor = str(e.get("anchor", "")).strip()
+    if pid not in paras:
+        return None, "unknown or ineligible paragraph for the added sentence"
+    i = sentence.lower().find(anchor.lower()) if anchor else -1
+    if i >= 0:
+        anchor = sentence[i:i + len(anchor)]          # use the sentence's own casing
+    b, _, _, last = paras[pid]
+    bad = validate.bridge_problem(sentence, anchor, cand.target, last,
+                                  cfg.get("linking", "bridge_max_words", default=30))
+    if bad:
+        return None, bad
+    return {"sentence_id": f"p{b}.add", "block": b, "added": True, "anchor": anchor, "rewritten": sentence,
+            "original": content.ADDED_MARK + last, "url": cand.target.link, "candidate": cand, "raw": e}, None
+
+
+def bridge_target(a: Analysis, accepted: list[dict], cfg: Config):
+    """The programme that should get an added sentence, if any: the post's own (required)
+    programme, when no programme link was placed on the writer's words and the cap allows one more."""
+    if not cfg.get("linking", "program_bridge_sentence", default=False):
+        return None, None
+    if any(e["candidate"].target.type == "program" for e in accepted):
+        return None, None
+    req = [c for c in a.shortlist if c.required and c.target.type == "program"]
+    if not req:
+        return None, None
+    if a.draft.existing_internal + len(accepted) + 1 > cfg.get("linking", "max_links"):
+        return None, "programme sentence skipped: article already at the link cap"
+    return req[0], None
+
+
+def add_bridge(a: Analysis, checked: validate.Checked, llm, cfg: Config) -> None:
+    """Last step for the programme link: if it couldn't go on the writer's own words, ask for ONE
+    short added sentence at the end of a fitting paragraph (the conclusion only as a last resort)."""
+    cand, note = bridge_target(a, checked.accepted, cfg)
+    if note:
+        checked.notes.append(note)
+    if cand is None:
+        return
+    paras = bridge_paragraphs(a, checked.accepted, cand, cfg)
+    if not paras:
+        checked.notes.append("programme sentence skipped: no paragraph with room for it")
+        return
+    bridge_anchors = cand.target.extras.get("bridge_anchors") or cand.target.keywords
+    prompt = build_bridge_prompt(a.draft.title, cand.target.title, bridge_anchors,
+                                 [(pid, fit, text) for pid, (_, fit, text, _) in paras.items()],
+                                 cfg.get("linking", "bridge_max_words", default=30))
+    try:
+        proposals = llm.propose(prompt)[:2]
+    except Exception as ex:          # the main links are already validated: never lose them over this
+        checked.notes.append(f"programme sentence skipped: {type(ex).__name__}")
+        return
+    for e in proposals:
+        edit, reason = _bridge_edit(e, cand, paras, a, cfg)
+        if edit:
+            checked.accepted.append(edit)
+            checked.notes = [n for n in checked.notes if n != "required program link not placed"]
+            checked.notes.append("programme link added as a new sentence")
+            return
+        checked.rejected.append(({"anchor": e.get("anchor", ""), "rewritten": e.get("sentence", "")},
+                                 f"added sentence: {reason}"))
+
+
+def replay(a: Analysis, reviewed: list[dict], cfg: Config) -> Result:
+    """Re-apply links someone reviewed in a dry run (rows from the Changes tab), exactly as proposed,
+    without asking the LLM again. Each one is re-checked against the post as it is NOW and against
+    the current rules; anything that no longer fits is dropped with a reason, never re-worded."""
+    by_text = {" ".join(s.text.split()): s for s in a.parsed.sentences.values()}
+    by_url = {}
+    for c in a.candidates:
+        by_url.setdefault(c.target.url, c)
+        by_url.setdefault(norm_url(c.target.link), c)
+    ids, edits, pre_rejected = {}, [], []
+    added_rows = []
+    for i, row in enumerate(reviewed, 1):
+        e = {"anchor": str(row.get("anchor", "")), "rewritten": str(row.get("rewritten_sentence", "")),
+             "target_url": str(row.get("target_url", ""))}
+        if str(row.get("original_sentence", "")).startswith(content.ADDED_MARK):
+            added_rows.append((row, e))
+            continue
+        s = by_text.get(" ".join(str(row.get("original_sentence", "")).split()))
+        cand = by_url.get(norm_url(e["target_url"]))
+        if s is None:
+            pre_rejected.append((e, "sentence changed since the dry run"))
+        elif cand is None:
+            pre_rejected.append((e, "target no longer allowed for this post"))
+        else:
+            ids[f"R{i}"] = cand
+            edits.append({**e, "sentence_id": s.id, "target_id": f"R{i}"})
+    own_text = f"{a.draft.title} {a.draft.primary_keyword}"
+    budget = scoring.new_link_budget(a.draft, cfg)
+    checked = validate.check(edits, ids, a.parsed, budget, cfg.settings, a.offered, own_text, a.common_words)
+    checked.rejected = pre_rejected + checked.rejected
+    checked.notes = []                    # "required programme link" is a planning note, not a replay one
+    for row, e in added_rows:             # the reviewed added sentence: same paragraph, same words
+        cand = by_url.get(norm_url(e["target_url"]))
+        after = _norm(str(row.get("original_sentence", ""))[len(content.ADDED_MARK):])
+        paras = bridge_paragraphs(a, checked.accepted, cand, cfg) if cand else {}
+        pid = next((k for k, v in paras.items() if _norm(v[3]) == after), None)
+        if cand is None:
+            checked.rejected.append((e, "target no longer allowed for this post"))
+        elif pid is None:
+            checked.rejected.append((e, "paragraph for the added sentence changed or now has a link"))
+        elif len(checked.accepted) >= budget + 1:
+            checked.rejected.append((e, "over link budget"))
+        else:
+            edit, reason = _bridge_edit({"paragraph_id": pid, "sentence": e["rewritten"], "anchor": e["anchor"]},
+                                        cand, paras, a, cfg)
+            if edit:
+                checked.accepted.append(edit)
+            else:
+                checked.rejected.append((e, f"added sentence: {reason}"))
+    new_raw = content.apply_edits(a.parsed, checked.accepted) if checked.accepted else None
+    return Result(checked, new_raw, "")
 
 
 def repair_note(checked, ids, missing: int) -> str:

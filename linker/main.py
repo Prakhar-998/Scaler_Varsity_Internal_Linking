@@ -71,7 +71,9 @@ def recently_edited(post: dict, minutes: int, now: datetime | None = None) -> in
 
 
 def process_post(row, wp, inventory, cat_names, llm, cfg, control, dry_run, *,
-                 skip_cooloff: bool = False, mode: str = "draft", allow_published: bool = False) -> dict:
+                 skip_cooloff: bool = False, mode: str = "draft", allow_published: bool = False,
+                 reviewed: list[dict] | None = None) -> dict:
+    """`reviewed`: apply these dry-run rows (Changes tab) exactly, instead of asking the LLM."""
     draft = wp.get_draft(row.post_id)
     allowed = set(cfg.get("wordpress", "editable_statuses")) | ({"publish"} if allow_published else set())
     if draft["status"] not in allowed:
@@ -96,7 +98,7 @@ def process_post(row, wp, inventory, cat_names, llm, cfg, control, dry_run, *,
                          f"{why} | {existing_note}", mode=mode, url=draft.get("url", ""))
         return {"post_id": row.post_id, "status": "no_links", "reason": why}
 
-    res = pipeline.propose(a, llm, cfg)
+    res = pipeline.replay(a, reviewed, cfg) if reviewed is not None else pipeline.propose(a, llm, cfg)
     checked = res.checked
     if res.new_raw and not dry_run:
         try:
@@ -110,11 +112,15 @@ def process_post(row, wp, inventory, cat_names, llm, cfg, control, dry_run, *,
             return {"post_id": row.post_id, "title": d.title, "status": "retry_later", "reason": str(e)}
 
     run_at = _now()
-    change_rows = [[row.post_id, d.title, parsed.sentences[a["sentence_id"]].block, a["url"],
+    change_rows = [[row.post_id, d.title, a.get("block", parsed.sentences[a["sentence_id"]].block if a["sentence_id"] in parsed.sentences else ""), a["url"],
                     a["anchor"], a["candidate"].target.type, a["candidate"].score,
                     a["original"], a["rewritten"], dry_run, run_at] for a in checked.accepted]
     control.log_changes(change_rows)
     notes = [existing_note] + pipeline.hygiene_notes(a, cfg) + checked.notes
+    if reviewed is not None:
+        notes.append(f"applied reviewed dry-run links: {len(checked.accepted)} of {len(reviewed)}")
+    elif getattr(llm, "used_model", None):
+        notes.append(f"model: {llm.used_model}")
     if checked.rejected:
         notes.append(f"rejected {len(checked.rejected)}: " + "; ".join(sorted({r for _, r in checked.rejected})))
     status = "linked" if checked.accepted else "no_links"

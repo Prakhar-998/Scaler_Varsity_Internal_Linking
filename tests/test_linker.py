@@ -137,7 +137,8 @@ def test_validation_rejects_bad_edits():
     reasons = [r for _, r in res.rejected]
     assert reasons[:3] == ["unknown sentence_id", "unknown target_id", "generic anchor"]
     assert reasons[3] in ("rewrite introduced new numbers", "program link changed the writer's words "
-                          "(only inserting a short phrase is allowed)")
+                          "(only inserting a short phrase is allowed)",
+                          "program links must use the writer's own words (no inserted phrase)")
     assert reasons[4] == "rewrite changed too much" or reasons[4].startswith(("rewrite adds words", "program link"))
     assert not res.accepted and "required program link not placed" in res.notes
 
@@ -159,7 +160,7 @@ class FakeLLM:
              "rewritten": "Prompt injection is one of the risks that forward deployed engineers have to defend against on every customer project they take on."},
             {"sentence_id": sid_tr, "target_id": tid["IIT Delhi - AI Forward Deployed Engineering"],
              "anchor": "forward deployed engineering programme",
-             "rewritten": "Many engineers build these skills through structured training, such as a forward deployed engineering programme, rather than on the job alone, because the feedback loop is faster."},
+             "rewritten": "Many engineers build these skills through a forward deployed engineering programme rather than on the job alone, because the feedback loop is faster."},
         ]
 
 
@@ -207,7 +208,7 @@ HYGIENE_RAW = """<!-- wp:paragraph -->
 <!-- /wp:paragraph -->
 
 <!-- wp:paragraph -->
-<p>Many engineers build these skills through structured training rather than on the job alone, because the feedback loop is faster.</p>
+<p>Many engineers build these skills through a forward deployed engineering programme rather than on the job alone, because the feedback loop is faster.</p>
 <!-- /wp:paragraph -->
 """
 
@@ -274,7 +275,8 @@ def test_validator_blocks_new_links_next_to_each_other():
     res = validate.check(edits, ids, p, 3, c.settings)
     assert len(res.accepted) == 1
     assert res.rejected[0][1] in {"too close to another link", "paragraph already has a new link",
-                                  "program link in a sentence that isn't about learning or the programme's topic"}
+                                  "program link in a sentence that isn't about learning or the programme's topic",
+                                  "program links must use the writer's own words (no inserted phrase)"}
 
 
 # ---------- program pages file ----------
@@ -320,7 +322,7 @@ RENDERED = """<p>Intro paragraph that the linker always leaves alone for safety.
 <h2>Why it matters</h2>
 <p>Every production AI system needs a way to prove it works before customers rely on it. Teams usually start with retrieval augmented generation because it&#8217;s cheaper than training a model.</p>
 <p>Prompt injection is one of the risks that forward deployed engineers have to defend against &#8211; on every customer project they take on.</p>
-<p>Many engineers build these skills through structured training rather than on the job alone, because the feedback loop is faster.</p>
+<p>Many engineers build these skills through a forward deployed engineering programme rather than on the job alone, because the feedback loop is faster.</p>
 <script>alert(1)</script>"""
 
 
@@ -465,7 +467,7 @@ def _t(title, kws, url="https://www.interviewbit.com/varsity/blog/x/"):
     ("phase estimation quantum circuit", _t("Quantum Circuit", ["quantum circuit"]),
      "anchor uses this article's own topic for another page"),
     ("applications of quantum phase estimation", _t("Quantum Computing Applications", ["quantum computing applications"]),
-     "anchor uses this article's own topic for another page"),
+     "anchor's main word doesn't describe the target page"),
     ("On real hardware", _t("Quantum Hardware: How Quantum Computers Actually Work", ["quantum hardware"]),
      "anchor starts with a filler word"),
     ("noisy intermediate-scale quantum", _t("NISQ Computing Explained", ["nisq computing", "noisy intermediate-scale quantum"]), None),
@@ -590,7 +592,8 @@ def test_punctuation_only_rewrite_rejected():
     orig = "That is why full-scale QPE is hard on today's noisy intermediate-scale quantum (NISQ) hardware."
     res = _single("NISQ hardware", orig, orig.replace("(NISQ) hardware", "(NISQ hardware)"),
                   target_title="NISQ Explained", kws=("nisq",))
-    assert res.rejected and res.rejected[0][1] in ("rewrite only changed punctuation", "blog links must use the writer's own words (anchor isn't in the sentence)")
+    assert res.rejected and res.rejected[0][1] in ("rewrite only changed punctuation", "blog links must use the writer's own words (anchor isn't in the sentence)",
+                                                   "anchor's main word doesn't describe the target page")
 
 
 def test_verbatim_anchor_keeps_writer_sentence():
@@ -722,15 +725,30 @@ def test_blog_link_cannot_replace_or_flip_writer_words():
         assert not res.accepted and "writer's own words" in res.rejected[0][1]
 
 
-def _program_single(orig, rewritten, anchor="generative AI course"):
+def _program_single(orig, rewritten, anchor="generative AI course", insert_words=6):
     from linker.content import ParsedDraft, Sentence
+    settings = cfg().settings
+    settings["linking"]["program_max_added_words"] = insert_words
     s = Sentence("p5.s0", 5, orig, orig, 20)
     parsed = ParsedDraft("", {}, {"p5.s0": s}, 1000, [], set(), {})
     t = Target("https://www.interviewbit.com/varsity/iit-delhi/generative-ai", "IIT Delhi - Generative AI",
                "program", ["Generative AI"], ["generative AI programme", "generative AI course"], program_id="genai")
     ids = {"T1": scoring.Candidate(t, 1, 1, "same", None, required=True)}
     return validate.check([{"sentence_id": "p5.s0", "target_id": "T1", "anchor": anchor, "rewritten": rewritten}],
-                          ids, parsed, 3, cfg().settings, None, "Cursor vs Claude Code", set())
+                          ids, parsed, 3, settings, None, "Cursor vs Claude Code", set())
+
+
+def test_program_links_are_verbatim_by_default():
+    # the shipped default: no inserted phrases, even in a learning sentence (batch-1 backfill cases)
+    assert cfg().settings["linking"]["program_max_added_words"] == 0
+    r = _program_single("Most engineers pick up these skills through structured training rather than on the job.",
+                        "Most engineers pick up these skills through structured training, like a generative AI course, rather than on the job.",
+                        insert_words=0)
+    assert not r.accepted and "writer's own words" in r.rejected[0][1]
+    # the writer's own words are fine
+    orig = "Many engineers now take a generative AI course before switching roles."
+    r = _program_single(orig, orig, insert_words=0)
+    assert r.accepted and r.accepted[0]["rewritten"] == orig
 
 
 def test_program_link_rules():
@@ -948,3 +966,304 @@ def test_event_run_skips_cooloff_only_for_triggered_drafts(monkeypatch):
     monkeypatch.setattr(m, "OUT", __import__("pathlib").Path(str(__import__("tempfile").mkdtemp())))
     m.main(["--event-post-id", "1940"])
     assert drafts[1940].updated and drafts[1941].updated is None   # 1941 edited a minute ago, not triggered
+
+
+# ---------- patch 17: cases from the first backfill dry run (operations batch) ----------
+
+SCM = BASE + "supply-chain-management/"
+NEXTGEN = BASE + "next-generation-supply-chain/"
+NGLOG = BASE + "next-gen-logistics/"
+
+
+def _ops_targets():
+    return [
+        Target(SCM, "Supply Chain Management: The Bullwhip Effect, Risk, and the AI Fix", "blog",
+               ["Supply Chain Management"], ["supply chain management"], post_id=177),
+        Target(NEXTGEN, "The Next Generation of Supply Chains: AI, Automation, and Autonomous Decision-Making",
+               "blog", ["Supply Chain Management"], ["supply chain management", "next generation of supply chains"],
+               post_id=165),
+        Target(NGLOG, "Next-Gen Logistics: How AI Is Rebuilding Freight, Fulfilment & Last-Mile Networks", "blog",
+               ["Business Operations"], ["next-gen logistics"], post_id=173),
+    ]
+
+
+def test_shared_keyword_stays_with_the_page_that_owns_it():
+    from linker.inventory import assign_keyword_owners
+    ts = _ops_targets()
+    assign_keyword_owners(ts)
+    assert "supply chain management" in ts[0].keywords             # /supply-chain-management/ owns it
+    assert "supply chain management" not in ts[1].keywords         # the broader post loses it
+    # no clear owner: nothing is removed
+    a = Target(BASE + "a/", "Alpha Topic", "blog", [], ["shared phrase"])
+    b = Target(BASE + "b/", "Beta Topic", "blog", [], ["shared phrase"])
+    assign_keyword_owners([a, b])
+    assert a.keywords == b.keywords == ["shared phrase"]
+
+
+@pytest.mark.parametrize("anchor,idx,ok", [
+    ("logistics costs", 2, False),             # 165 -> next-gen logistics: side word only
+    ("logistics executives", 2, False),        # 177 -> next-gen logistics
+    ("Supply chain management", 1, False),     # 177 -> next-gen supply chain (after ownership)
+    ("next-gen logistics", 2, True),
+    ("Supply chain management", 0, True),
+])
+def test_anchor_main_word_must_be_the_targets_topic(anchor, idx, ok):
+    from linker.inventory import assign_keyword_owners
+    from linker.validate import anchor_problem
+    ts = _ops_targets()
+    assign_keyword_owners(ts)
+    assert (anchor_problem(anchor, ts[idx], "Logistics vs Supply Chain Management") is None) == ok
+
+
+def test_same_anchor_words_cannot_link_two_pages():
+    # post 160 linked "supply chain management" to two different pages
+    res = _single("supply chain management",
+                  "The traditional split was roughly: logistics executes, supply chain management plans and coordinates.",
+                  "The traditional split was roughly: logistics executes, supply chain management plans and coordinates.",
+                  accepted_anchor="supply chain management", target_title="Supply Chain Management",
+                  kws=("supply chain management",), common=("supply", "chain", "management"))
+    assert len(res.accepted) == 1
+    assert res.rejected[0][1] == "same anchor words already link to another page"
+
+
+def test_article_never_links_its_own_title_topic_elsewhere():
+    # backfilled posts have no primary keyword: the title topic is used for the cannibalisation guard
+    c = cfg()
+    d = scoring.Draft(post_id=177, title="Supply Chain Management: The Bullwhip Effect, Risk, and the AI Fix",
+                      categories=["Supply Chain Management"], primary_keyword="",
+                      sentences=["Supply chain management coordinates sourcing, production and delivery."],
+                      word_count=900, existing_links=set())
+    other = Target(BASE + "scm-basics/", "SCM Basics", "blog", ["Supply Chain Management"],
+                   ["supply chain management"], post_id=5)
+    assert not scoring.score_targets([other], d, c)
+
+
+REVIEWED = [
+    {"anchor": "Prompt injection", "target_url": BASE + "prompt-injection/",
+     "original_sentence": "Prompt injection is one of the risks that forward deployed engineers have to defend against on every customer project they take on.",
+     "rewritten_sentence": "Prompt injection is one of the risks that forward deployed engineers have to defend against on every customer project they take on."},
+    {"anchor": "operations management course", "target_url": "https://www.example.com/programs/fde/",
+     "original_sentence": "Many engineers build these skills through a forward deployed engineering programme rather than on the job alone, because the feedback loop is faster.",
+     "rewritten_sentence": "Many engineers build these skills through a forward deployed engineering programme, like an operations management course, rather than on the job alone, because the feedback loop is faster."},
+    {"anchor": "takt time", "target_url": BASE + "takt-time/",
+     "original_sentence": "A sentence the editor has since deleted from the post.",
+     "rewritten_sentence": "A sentence the editor has since deleted from the post."},
+]
+
+
+class NoLLM:
+    used_model = None
+
+    def propose(self, prompt):
+        raise AssertionError("apply-reviewed must not call the LLM")
+
+
+def test_apply_reviewed_uses_dry_run_links_exactly_and_rechecks_them():
+    c = cfg()
+    wp, ctl = FakeWP(DRAFT_RAW, status="publish"), FakeControl()
+    res = process_post(Row(), wp, inventory(), {7: "Forward Deployed Engineering"}, NoLLM(), c, ctl, False,
+                       mode="backfill", allow_published=True, reviewed=REVIEWED)
+    assert [a["anchor"] for a in res["accepted"]] == ["Prompt injection"]
+    reasons = {r for _, r in [(x["edit"], x["reason"]) for x in res["rejected"]]}
+    assert "sentence changed since the dry run" in reasons
+    assert any("writer's own words" in r for r in reasons)          # old inserted programme phrase dropped
+    assert 'href="https://www.interviewbit.com/varsity/blog/prompt-injection/">Prompt injection</a>' in wp.updated
+    assert "applied reviewed dry-run links: 1 of 3" in ctl.posts[-1][6]
+
+
+def test_model_used_is_logged():
+    c = cfg()
+    llm = FakeLLM()
+    llm.used_model = "gemini-3.6-flash"
+    ctl = FakeControl()
+    process_post(Row(), FakeWP(DRAFT_RAW), inventory(), {7: "Forward Deployed Engineering"}, llm, c, ctl, True)
+    assert "model: gemini-3.6-flash" in ctl.posts[-1][6]
+
+
+def test_backfill_apply_reviewed_end_to_end(monkeypatch):
+    from linker import backfill
+    from linker.wordpress import PublishedPost
+    import linker.llm as llm_mod
+    _secrets_env(monkeypatch)
+    posts = [PublishedPost(i, BASE + f"p{i}/", f"Post {i}", [7], RENDERED) for i in (10, 11, 12)]
+    wp = FakeWP(DRAFT_RAW, status="publish")
+
+    class Ctl(_Ctl):
+        def dry_run_post_ids(self): return {11}
+        def reviewed_edits(self, pid): return REVIEWED[:1] if pid == 11 else None
+
+    ctl = Ctl()
+
+    class WP:
+        def __init__(self, *a): pass
+        def categories(self): return {7: "Forward Deployed Engineering"}
+        def published_posts(self): return posts
+        def get_draft(self, pid): return wp.get_draft(pid)
+        def update_draft(self, pid, raw, **kw): wp.update_draft(pid, raw, **kw)
+
+    class MS:
+        def __init__(self, *a): pass
+        def rows(self): return []
+
+    monkeypatch.setattr(backfill, "ControlSheet", lambda *a: ctl)
+    monkeypatch.setattr(backfill, "WordPress", WP)
+    monkeypatch.setattr(backfill, "build_inventory", lambda *a, **k: inventory())
+    monkeypatch.setattr("linker.sheets.MasterSheet", MS)
+    monkeypatch.setattr(llm_mod, "gemini_from_config", lambda *a, **k: NoLLM())
+
+    backfill.main(["--next", "5", "--apply-reviewed"])       # only posts that HAVE a dry run
+    assert [p[0] for p in ctl.posts] == [11]
+    assert wp.updated and wp.update_kwargs["allow_published"] is True
+    assert ctl.posts[-1][3] == "linked" and ctl.posts[-1][5] is False
+
+    ctl.posts.clear(); wp.updated = None
+    backfill.main(["--posts", BASE + "p12/", "--apply-reviewed"])   # never dry-run: skipped, not edited
+    assert wp.updated is None and not ctl.posts
+
+
+def test_reviewed_edits_reads_latest_dry_run_rows():
+    from linker.sheets import ControlSheet
+
+    class WS:
+        def __init__(self, recs): self.recs = recs
+        def get_all_records(self): return self.recs
+
+    cs = ControlSheet.__new__(ControlSheet)
+    cs.processed = WS([
+        {"post_id": 160, "dry_run": "TRUE", "mode": "backfill", "run_at": "2026-11-03 08:00 UTC"},
+        {"post_id": 160, "dry_run": "TRUE", "mode": "backfill", "run_at": "2026-11-03 09:32 UTC"},
+        {"post_id": 161, "dry_run": "FALSE", "mode": "backfill", "run_at": "2026-11-03 09:40 UTC"},
+    ])
+    cs.processed_records = lambda: cs.processed.get_all_records()
+    cs.changes = WS([
+        {"post_id": 160, "dry_run": "TRUE", "run_at": "2026-11-03 08:00 UTC", "anchor": "old run"},
+        {"post_id": 160, "dry_run": "TRUE", "run_at": "2026-11-03 09:31 UTC", "anchor": "supply chain management"},
+        {"post_id": 160, "dry_run": "FALSE", "run_at": "2026-11-03 09:32 UTC", "anchor": "live row"},
+    ])
+    assert [r["anchor"] for r in cs.reviewed_edits(160)] == ["supply chain management"]
+    assert cs.reviewed_edits(161) is None and cs.dry_run_post_ids() == {160}
+
+
+# ---------- programme bridge sentence (added sentence, writer's sentences untouched) ----------
+
+BRIDGE_RAW = """<!-- wp:paragraph -->
+<p>Forward deployed engineers sit between customers and product teams, which makes the role unusual.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>Every production AI system needs a way to prove it works before customers rely on it. Teams usually start with retrieval augmented generation because it is cheaper than training a model.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>Prompt injection is one of the risks that forward deployed engineers have to defend against on every customer project they take on.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>Many engineers build these skills through structured training rather than on the job alone, because the feedback loop is faster.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>In the end, the teams that ship reliable systems are the ones that treat evaluation as part of the job from day one.</p>
+<!-- /wp:paragraph -->
+"""
+
+GOOD_BRIDGE = ("If you want to build them in a structured way, a forward deployed engineering programme covers "
+               "evaluation, deployment and customer work end to end.")
+
+
+class BridgeLLM:
+    def __init__(self, sentence=GOOD_BRIDGE, anchor="forward deployed engineering programme", pick="BEST FIT"):
+        self.sentence, self.anchor, self.pick, self.prompts = sentence, anchor, pick, []
+
+    def propose(self, prompt):
+        self.prompts.append(prompt)
+        if "ADD ONE NEW SENTENCE" in prompt:
+            paras = re.findall(r"^(B\d+) \| (BEST FIT|LAST RESORT) \| (.*)$", prompt, re.M)
+            pid = next((p for p, fit, txt in paras if fit == self.pick and txt.startswith("Many engineers")),
+                       next(p for p, fit, _ in paras if fit == self.pick))
+            return [{"paragraph_id": pid, "anchor": self.anchor, "sentence": self.sentence}]
+        ids = dict(re.findall(r"^(T\d+) \| \w+ \| ([^|]+) \|", prompt, re.M))
+        tid = {v.strip(): k for k, v in ids.items()}
+        sid = re.search(r"^(p\d+\.s\d+): Prompt injection is one", prompt, re.M).group(1)
+        return [{"sentence_id": sid, "target_id": tid["Prompt Injection Attacks"], "anchor": "Prompt injection",
+                 "rewritten": "Prompt injection is one of the risks that forward deployed engineers have to defend against on every customer project they take on."}]
+
+
+def test_programme_link_added_as_new_sentence_in_best_fit_paragraph():
+    c = cfg()
+    wp, ctl, llm = FakeWP(BRIDGE_RAW), FakeControl(), BridgeLLM()
+    res = process_post(Row(), wp, inventory(), {7: "Forward Deployed Engineering"}, llm, c, ctl, False)
+    assert res["status"] == "linked" and len(res["accepted"]) == 2
+    bridge_prompt = llm.prompts[-1]
+    assert re.search(r"^B\d+ \| BEST FIT \| Many engineers build these skills", bridge_prompt, re.M)  # learning paragraph
+    assert re.search(r"LAST RESORT \| In the end", bridge_prompt)                       # conclusion last
+    assert not re.search(r"^B\d+ \| .* \| Prompt injection", bridge_prompt, re.M)      # already has a link
+    # appended to the END of the training paragraph; the writer's sentence is unchanged
+    assert ("because the feedback loop is faster. If you want to build them in a structured way, a "
+            '<a href="https://www.example.com/programs/fde/">forward deployed engineering programme</a>') in wp.updated
+    assert "programme link added as a new sentence" in ctl.posts[-1][6]
+    assert "required program link not placed" not in ctl.posts[-1][6]
+    row = [r for r in ctl.changes if r[3] == "https://www.example.com/programs/fde/"][0]
+    assert row[7].startswith("[added after] Many engineers build") and row[8] == GOOD_BRIDGE
+
+
+@pytest.mark.parametrize("sentence,anchor,reason", [
+    ("A forward deployed engineering programme is the best way to land a top salary in this field.",
+     "forward deployed engineering programme", "promotional claim"),
+    ("Over 3 months, a forward deployed engineering programme covers evaluation, deployment and customer work.",
+     "forward deployed engineering programme", "numbers"),
+    ("If you want to go further, structured forward deployed engineering helps you practise this with real customers.",
+     "forward deployed engineering", "programme's anchor phrases"),       # topic anchor isn't a programme phrase
+    ("A forward deployed engineering programme helps.", "forward deployed engineering programme", "length"),
+])
+def test_bad_added_sentences_are_rejected(sentence, anchor, reason):
+    c = cfg()
+    wp, ctl = FakeWP(BRIDGE_RAW), FakeControl()
+    res = process_post(Row(), wp, inventory(), {7: "Forward Deployed Engineering"},
+                       BridgeLLM(sentence, anchor), c, ctl, False)
+    assert len(res["accepted"]) == 1
+    assert any(reason in r["reason"] for r in res["rejected"])
+    assert "required program link not placed" in ctl.posts[-1][6]
+
+
+def test_no_added_sentence_when_programme_already_on_writers_words():
+    c = cfg()
+    llm = FakeLLM()             # places the programme link verbatim in DRAFT_RAW
+    calls = []
+    orig = llm.propose
+    llm.propose = lambda p: calls.append(p) or orig(p)
+    process_post(Row(), FakeWP(DRAFT_RAW), inventory(), {7: "Forward Deployed Engineering"}, llm, c, FakeControl(), True)
+    assert not any("ADD ONE NEW SENTENCE" in p for p in calls)
+
+
+def test_bridge_can_be_switched_off():
+    c = cfg()
+    c.settings["linking"]["program_bridge_sentence"] = False
+    llm = BridgeLLM()
+    res = process_post(Row(), FakeWP(BRIDGE_RAW), inventory(), {7: "Forward Deployed Engineering"}, llm, c,
+                       FakeControl(), True)
+    assert len(res["accepted"]) == 1 and len(llm.prompts) == 1
+
+
+def test_apply_reviewed_replays_added_sentence():
+    c = cfg()
+    reviewed = [{"anchor": "forward deployed engineering programme", "target_url": "https://www.example.com/programs/fde/",
+                 "original_sentence": "[added after] Many engineers build these skills through structured training rather than on the job alone, because the feedback loop is faster.",
+                 "rewritten_sentence": GOOD_BRIDGE}]
+    wp, ctl = FakeWP(BRIDGE_RAW, status="publish"), FakeControl()
+    res = process_post(Row(), wp, inventory(), {7: "Forward Deployed Engineering"}, NoLLM(), c, ctl, False,
+                       mode="backfill", allow_published=True, reviewed=reviewed)
+    assert len(res["accepted"]) == 1 and GOOD_BRIDGE.split(",")[0] in wp.updated
+    # paragraph edited since the dry run: dropped, not re-placed somewhere else
+    edited = BRIDGE_RAW.replace("the feedback loop is faster.", "feedback arrives sooner.")
+    wp2 = FakeWP(edited, status="publish")
+    res = process_post(Row(), wp2, inventory(), {7: "Forward Deployed Engineering"}, NoLLM(), c, FakeControl(), False,
+                       mode="backfill", allow_published=True, reviewed=reviewed)
+    assert not res["accepted"] and "changed" in res["rejected"][0]["reason"]
+
+
+def test_program_csv_has_topic_and_programme_anchors():
+    progs = {p.id: p for p in load_programs(CONFIG_DIR / "program_pages.csv")}
+    assert "AI-powered operations" in progs["ops"].topic_keywords
+    assert "AI-powered operations programme" in progs["ops"].keywords
+    assert all(p.topic_keywords for p in progs.values())

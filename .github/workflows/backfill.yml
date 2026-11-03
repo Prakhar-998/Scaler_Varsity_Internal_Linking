@@ -1,8 +1,10 @@
 name: Backfill published posts
 
 # Adds internal links to posts that are already live, in small batches you review first.
-# Dry run by default: proposals go to the control sheet (Processed + Changes tabs) only.
-# Untick "dry run" to apply the SAME posts after reviewing them.
+#   1. action = "dry run": proposals go to the control sheet (Processed + Changes tabs) only.
+#   2. Review the Changes rows; delete any row whose link you don't want.
+#   3. action = "apply reviewed" with the same posts: exactly those links go live (no new Gemini call).
+# "live (new Gemini run)" skips the review and applies a fresh proposal.
 
 on:
   workflow_dispatch:
@@ -17,10 +19,14 @@ on:
       category:
         description: "With 'next': only this WordPress category (optional)"
         required: false
-      dry_run:
-        description: "Dry run (log proposed links only, don't edit the live posts)"
-        type: boolean
-        default: true
+      action:
+        description: "What to do"
+        type: choice
+        default: "dry run"
+        options:
+          - "dry run"
+          - "apply reviewed"
+          - "live (new Gemini run)"
 
 env:
   PYTHONUNBUFFERED: "1"
@@ -32,7 +38,7 @@ concurrency:
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -53,9 +59,13 @@ jobs:
           POSTS: ${{ inputs.posts }}
           NEXT: ${{ inputs.next }}
           CATEGORY: ${{ inputs.category }}
+          ACTION: ${{ inputs.action }}
         run: |
           args=()
           if [ -n "$POSTS" ]; then args+=(--posts "$POSTS"); else args+=(--next "${NEXT:-3}"); fi
           [ -n "$CATEGORY" ] && args+=(--category "$CATEGORY")
-          [ "${{ inputs.dry_run }}" = "false" ] && args+=(--live)
+          case "$ACTION" in
+            "apply reviewed") args+=(--apply-reviewed) ;;
+            "live (new Gemini run)") args+=(--live) ;;
+          esac
           python -m linker.backfill "${args[@]}"

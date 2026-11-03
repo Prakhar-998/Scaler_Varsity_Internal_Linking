@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -143,6 +143,46 @@ class ControlSheet:
                 except (TypeError, ValueError):
                     pass
         return done
+
+    def _backfill_dry_runs(self) -> dict[int, str]:
+        """{post_id: run_at of its latest backfill DRY run}."""
+        out: dict[int, str] = {}
+        for rec in self.processed_records():
+            if str(rec.get("mode")) != "backfill" or not _truthy(rec.get("dry_run")):
+                continue
+            try:
+                pid = int(rec["post_id"])
+            except (TypeError, ValueError):
+                continue
+            if str(rec.get("run_at", "")) >= out.get(pid, ""):
+                out[pid] = str(rec.get("run_at", ""))
+        return out
+
+    def dry_run_post_ids(self) -> set[int]:
+        return set(self._backfill_dry_runs())
+
+    def reviewed_edits(self, post_id: int) -> list[dict] | None:
+        """The links proposed by this post's latest backfill dry run, as they stand in the Changes tab
+        now (rows deleted there count as rejected). None if the post has never had a dry run."""
+        run_at = self._backfill_dry_runs().get(int(post_id))
+        if not run_at:
+            return None
+        try:
+            end = datetime.strptime(run_at, "%Y-%m-%d %H:%M UTC")
+        except ValueError:
+            return None
+        start = end - timedelta(minutes=5)       # Changes rows are written just before the Processed row
+        rows = []
+        for rec in self.changes.get_all_records():
+            if str(rec.get("post_id")) != str(post_id) or not _truthy(rec.get("dry_run")):
+                continue
+            try:
+                at = datetime.strptime(str(rec.get("run_at", "")), "%Y-%m-%d %H:%M UTC")
+            except ValueError:
+                continue
+            if start <= at <= end:
+                rows.append(rec)
+        return rows
 
     def log_post(self, post_id, title, category, status, links_added, dry_run, notes="",
                  mode="draft", url=""):

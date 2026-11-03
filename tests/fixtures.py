@@ -23,7 +23,7 @@ DRAFT_RAW = """<!-- wp:paragraph -->
 <!-- /wp:paragraph -->
 
 <!-- wp:paragraph -->
-<p>Many engineers build these skills through structured training rather than on the job alone, because the feedback loop is faster.</p>
+<p>Many engineers build these skills through a forward deployed engineering programme rather than on the job alone, because the feedback loop is faster.</p>
 <!-- /wp:paragraph -->
 
 <!-- wp:heading -->

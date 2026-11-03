@@ -40,6 +40,8 @@ Rebuilt every run from live sources, so a newly published post becomes a link ta
   ("The Hadamard Gate Explained Better Than Your Textbook" → "hadamard gate")
 - program landing pages and their anchor ideas from `config/program_pages.csv`
 - inbound-link counts per URL, computed from every published post's content
+- if two posts carry the same keyword, it stays with the page that clearly owns it (slug or title
+  topic): "supply chain management" belongs to `/supply-chain-management/`, not to a broader post
 
 ### 2. Choosing pages: weightage function
 
@@ -55,14 +57,15 @@ score = W_type × W_category × (0.3 + 0.7 × relevance) + orphan_boost
 | `orphan_boost` | up to +0.3 for pages with few inbound links, decaying to 0 at 5 links |
 
 **Never linked:** the post itself; pages it already links to; pages targeting the same primary keyword
-(cannibalisation guard); a second page on the same sub-topic (e.g. both "Hadamard Gate" and "Quantum
+or the post's own title topic (cannibalisation guard); a second page on the same sub-topic (e.g. both "Hadamard Gate" and "Quantum
 Gates: From Hadamard to CNOT"). Blog pages with very low relevance are dropped.
 
 ### 3. Quotas (a ceiling, not a target)
 - Budget: about 1 internal link per 275 words, 3–8 **in total**. The writer's existing internal links
   count toward it (each page once; image/banner links don't count). New links = budget − existing.
 - The post's own programme page gets one "required" slot (max 2 programme links). Required means
-  "try first", not "force": if no sentence fits, it's skipped and logged.
+  "try first", not "force": if no sentence already names the programme's topic, it's skipped and
+  logged ("required program link not placed").
 - At least 60% of blog links come from the post's own WordPress category.
 
 All weights and quotas live in `config/settings.yaml`.
@@ -73,16 +76,26 @@ tables, FAQ sections, sentences with formatting, and sentences that already have
 
 - **Blog links: the writer's words, unchanged.** The anchor must be text already in the sentence; the
   sentence is not rewritten. If no sentence mentions a page's topic, that page is skipped.
-- **Programme links: insert only.** A short phrase (≤ 6 words) may be inserted, but only in a
-  sentence already about learning/courses/certifications/careers or the programme's topic, and
-  nothing of the writer's (words or punctuation) may be changed or removed.
+- **Programme links: the writer's words first, then one added sentence.**
+  1. Inline, on words the writer already used: each programme has *topic anchors* in
+     `program_pages.csv` ("AI-powered operations", "quantum computing", "generative AI"), so most
+     articles in a category already contain one.
+  2. If that isn't possible, Gemini writes **one new sentence** appended to the end of a paragraph
+     about skills, learning or the programme's topic (the conclusion only as a last resort), using one
+     of the programme's own anchor phrases ("AI-powered operations programme"). It must be 10–30 words,
+     one plain sentence, no numbers, no claims ("best", "top", salaries, placements). The writer's own
+     sentences are never edited. Logged in **Changes** as `[added after] <the paragraph's last sentence>`.
+  Rewriting a writer's sentence to squeeze in a programme phrase is off
+  (`linking.program_max_added_words: 0`); the added sentence can be switched off with
+  `linking.program_bridge_sentence: false`.
 
 ### 5. Validation (deterministic)
 Every proposal is checked; failures are dropped and logged with a reason. Highlights:
 - the wording rules above; no new numbers, markup or punctuation-only edits
 - anchors: 2–8 words (or one distinctive term that *is* the target's topic, e.g. "RLHF"); no filler
-  starts ("On…", "parts of…"); must describe the target page; must not use the article's own topic
-  for another page; one link per term per article; no near-identical anchors
+  starts ("On…", "parts of…"); the anchor's main (last) word must be the target's topic ("logistics
+  costs" is not an anchor for a logistics page); must not use the article's own topic for another
+  page; one link per term per article; the same words never link two different pages
 - spacing: one link per sentence, never in or next to a linked sentence, ≤ 1 new and ≤ 2 total links
   per paragraph
 - within the budget
@@ -109,8 +122,10 @@ formatting are untouched.
   (`apps_script/trigger_internal_linker.gs`), instead of waiting up to 30 minutes for the schedule.
 
 ### Reliability
-- Gemini: `gemini-3.8-flash` with low thinking, 5-minute deadline, 2 retries on 429/5xx, then
-  fallback models (`gemini-3.6-flash`, `gemini-3.5-flash-lite`).
+- Gemini: `gemini-3.8-flash` with low thinking, 5-minute deadline, 2 retries on 429/5xx
+  (`llm.retries`), then fallback models (`gemini-3.6-flash`, `gemini-3.5-flash-lite`). The model that
+  answered is logged in each post's **Processed** notes. Because every link must sit on the writer's
+  own words and pass the validator, a fallback model can't change wording; at worst it finds fewer links.
 - WordPress: posts fetched in light pages with retries; if article bodies can't be read, the run
   continues without inbound counts.
 - One bad post can't stop a run.
@@ -126,12 +141,13 @@ GitHub's web editor (it renders as a table); the next run picks it up.
 | `name` | programme name (shown to the LLM) |
 | `url` | landing page URL; tracking parameters are stripped automatically |
 | `categories` | WordPress categories this programme "owns", separated by `\|` (exact WP names) |
-| `anchors` | anchor-text ideas, most preferred first, separated by `\|` |
+| `topic_anchors` | topic phrases writers already use ("AI-powered operations"); linked inline on the writer's own words |
+| `anchors` | programme phrases ("AI-powered operations programme"); used in the added sentence |
 
 ## Safety
 - **MasterSheet is never written to**: read-only OAuth scope, and the service account is only a Viewer.
 - **Only drafts are edited** by the scheduled linker: status is re-checked right before every write.
-  Published posts are edited only by the *Backfill* workflow, and only when its dry run is unticked.
+  Published posts are edited only by the *Backfill* workflow, and only with action *apply reviewed* or *live*.
 - **No lost edits**: a save is refused if the post changed since it was read (see above).
 - **Preview and audit can't edit anything**: the audit workflow doesn't receive WordPress credentials.
 - **Dry run until switched**: with `DRY_RUN=true` proposals only go to the control sheet.
@@ -142,7 +158,7 @@ GitHub's web editor (it renders as a table); the next run picks it up.
 | Workflow | What it does | Changes WordPress? |
 |---|---|---|
 | **Internal linker** | Every 30 min, Mon–Sat 09:30–21:00 IST, and instantly when the MasterSheet signals new drafts: links drafts marked *Ready to Publish* that have a Draft Link. Manual runs can target one post ID. | Only when `DRY_RUN=false`, only drafts |
-| **Backfill published posts** | Adds links to already-live posts in small batches: specific URLs or "next N" not yet done. Dry run by default. | Only with *dry run* unticked |
+| **Backfill published posts** | Adds links to already-live posts in small batches: specific URLs or "next N" not yet done. Dry run, then *apply reviewed* puts exactly the reviewed links live. | Only with action *apply reviewed* or *live* |
 | **Preview on a post** | One post (URL, edit link or ID) → before/after `preview.html` | Never |
 | **Audit live posts** | Random sample or chosen URLs → control-sheet tabs *Audit Summary* / *Audit Links* + before/after pages | Never |
 | **Tests** | Offline test suite on every push | Never |
@@ -184,7 +200,8 @@ python -m pytest -q                    # offline, no credentials needed
 python -m linker.preview --post https://www.interviewbit.com/varsity/blog/rlhf/   # needs GEMINI_API_KEY
 python -m linker.audit --sample 5      # needs Gemini + Google service account + CONTROL_SHEET_ID
 python -m linker.main --post-id 1573 --dry-run
-python -m linker.backfill --next 3     # dry run; add --live to apply
+python -m linker.backfill --next 3     # dry run
+python -m linker.backfill --next 3 --apply-reviewed   # apply exactly what the dry run proposed
 ```
 
 ## Roadmap

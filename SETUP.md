@@ -71,6 +71,13 @@ site header and footer. To add one, add a row; to pause one, set `active` to `no
 `categories` must match WordPress category names exactly. This sets which blog categories link to it
 most.
 
+Two anchor columns, both `|`-separated:
+- `topic_anchors`: phrases writers already use ("AI-powered operations", "quantum computing"). The more
+  natural variants listed here, the more posts get the programme link on their own words. Add new ones
+  whenever you notice writers phrasing a topic differently.
+- `anchors`: programme phrases ("AI-powered operations programme"), used only in the one added sentence
+  when no topic anchor fits.
+
 ## 5. Test on any post first (no setup beyond the Gemini key)
 
 The preview runs the full pipeline on one post and changes nothing anywhere.
@@ -143,13 +150,20 @@ The 30-minute schedule stays on as a safety net.
 Actions → **Backfill published posts**. Every run is logged in **Processed** (`mode` = backfill) and
 **Changes**; a post that a *live* run linked, or found nothing to add to, is never picked by "next" again.
 
-1. **Try a few you know well:** paste 2–3 post URLs, keep *dry run* ticked, run. Read their rows in
-   **Changes** (original vs new sentence).
-2. **Apply them:** run again with the **same URLs** and *dry run* unticked. Check the live pages;
-   undo any post from WordPress → Revisions.
-3. **Batches:** leave URLs empty, set *next* to 5–10 (optionally a category), dry run first, then the
-   live run with the **post URLs from the dry run's summary** (so exactly the reviewed posts are
-   applied). Repeat until the run summary says 0 posts left.
+The workflow's **action** box has three choices:
+
+| Action | What happens |
+|---|---|
+| **dry run** (default) | Proposed links go to **Changes** only. Nothing on the site changes. |
+| **apply reviewed** | The links from each post's latest dry run go live **exactly as you reviewed them**. No new Gemini call. Delete a row in **Changes** first to reject that link. Each link is re-checked against the post as it is now; anything that no longer fits (the sentence was edited, a rule changed) is dropped and logged, never re-worded. |
+| **live (new Gemini run)** | Skips the review: asks Gemini again and applies its links, which may differ from the dry run. |
+
+1. **Dry run a batch:** paste post URLs (comma-separated), or leave URLs empty and set *next* to 5–10
+   (optionally a category). Action = *dry run*.
+2. **Review** the batch's rows in **Changes** (original sentence, anchor, target). Delete rows you don't want.
+3. **Apply:** same URLs, action = *apply reviewed*. With URLs empty and *next* set, it applies the next
+   posts that have a dry run waiting. Check a few live pages; undo any post from WordPress → Revisions.
+4. Repeat until the run summary says 0 posts left.
 
 Drafts that got published before the bot reached them show as `skipped` in **Processed**; they aren't
 "done", so backfill picks them up too.

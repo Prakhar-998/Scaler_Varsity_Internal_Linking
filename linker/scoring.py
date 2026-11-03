@@ -18,7 +18,7 @@ import math
 from dataclasses import dataclass
 
 from .config import Config
-from .inventory import Target
+from .inventory import Target, _title_phrase
 from .text import content_tokens, contains_phrase, norm_url, tokens
 
 
@@ -78,14 +78,16 @@ def score_targets(targets: list[Target], draft: Draft, cfg: Config) -> list[Cand
     w = cfg.get("weights")
     own = norm_url(draft.url) if draft.url else None
     existing = {norm_url(u) for u in draft.existing_links}
-    own_kw = draft.primary_keyword.strip().lower()
+    # This article's own topic: its primary keyword, plus the topic part of its title (backfilled
+    # posts often have no keyword in the MasterSheet).
+    own_kws = {k for k in (draft.primary_keyword.strip().lower(), (_title_phrase(draft.title) or "")) if k}
 
     out = []
     for t in targets:
         if t.url == own or t.post_id == draft.post_id or t.url in existing:
             continue
         # Cannibalisation guard: never point this post at another page targeting the same keyword.
-        if own_kw and t.type != "program" and own_kw in {k.lower() for k in t.keywords}:
+        if own_kws and t.type != "program" and own_kws & {k.lower() for k in t.keywords}:
             continue
         rel, hint = relevance(t, draft)
         if t.type != "program" and rel < w["min_relevance"]:

@@ -25,6 +25,8 @@ RULES
 - The anchor must describe the TARGET page: what the reader gets by clicking. Never use this
   article's own topic ("{title}") as the anchor for a different page.
 - The anchor must be accurate for the target: e.g. don't anchor "classical X" to a page about "quantum X".
+- The anchor's main (last) word must be the target's topic: "inventory management" for an inventory
+  page is right; "logistics costs" or "logistics executives" for a logistics page is wrong.
 - Start anchors with a meaningful word, never with "on", "in", "the", "a", "this" or similar.
 - Anchors are complete noun phrases ("Hadamard gates"), never a fragment cut mid-phrase
   ("sequence of Hadamard") and never led by a verb ("apply Hadamard gates").
@@ -34,10 +36,7 @@ RULES
 - BLOG targets: the anchor MUST be words the sentence already contains, and "rewritten" must be the
   sentence exactly as given. Never insert, replace or reorder words for a blog link. If no sentence
   already mentions a blog target's topic, skip that target.
-- PROGRAM targets: prefer a sentence that already mentions the programme topic or learning
-  (course, certification, training, upskilling, career). You may INSERT a short phrase (max 6 words)
-  containing the anchor; never delete or change the writer's words, punctuation or quotes. If no
-  sentence is about learning or the programme's topic, skip the programme link.
+{program_rule}
 - Keep the rewrite minimal: same meaning, same facts, same tone. Do not add numbers, claims, names or statistics that are not in the original sentence. Add at most about 15 words.
 - The "rewritten" sentence must contain the anchor text exactly once, character for character.
 - Plain text only in "rewritten" (no HTML, no markdown).
@@ -53,7 +52,19 @@ Return JSON only:
 """
 
 
-def build_prompt(title: str, n: int, shortlist: list[Candidate], sentences: dict) -> tuple[str, dict]:
+PROGRAM_VERBATIM = """- PROGRAM targets: same as blog targets. The anchor MUST be words the sentence already contains
+  (e.g. "AI-powered operations", "quantum computing", "generative AI") and "rewritten" must be the
+  sentence exactly as given. Never insert a phrase like "such as a ... course". If no sentence
+  already names the programme's topic, skip the programme link."""
+
+PROGRAM_INSERT = """- PROGRAM targets: prefer a sentence that already mentions the programme topic or learning
+  (course, certification, training, upskilling, career). You may INSERT a short phrase (max {k} words)
+  containing the anchor; never delete or change the writer's words, punctuation or quotes. If no
+  sentence is about learning or the programme's topic, skip the programme link."""
+
+
+def build_prompt(title: str, n: int, shortlist: list[Candidate], sentences: dict,
+                 program_insert_words: int = 0) -> tuple[str, dict]:
     """`sentences` are only the eligible ones (spaced away from existing links)."""
     ids, lines = {}, []
     for i, c in enumerate(shortlist, 1):
@@ -67,7 +78,40 @@ def build_prompt(title: str, n: int, shortlist: list[Candidate], sentences: dict
         anchors = "; ".join(c.target.keywords[:4]) or c.target.title
         lines.append(f"{tid} | {c.target.type} | {c.target.title} | {anchors} | {', '.join(note) or '-'}")
     sents = "\n".join(f"{s.id}: {s.text}" for s in sentences.values())
-    return PROMPT.format(title=title, n=n, targets="\n".join(lines), sentences=sents), ids
+    rule = PROGRAM_INSERT.format(k=program_insert_words) if program_insert_words > 0 else PROGRAM_VERBATIM
+    return PROMPT.format(title=title, n=n, targets="\n".join(lines), sentences=sents, program_rule=rule), ids
+
+
+BRIDGE_PROMPT = """You are an editor for the InterviewBit Varsity blog. The article below has no natural
+place to link to its related programme, so you will ADD ONE NEW SENTENCE at the end of one paragraph.
+
+ARTICLE: "{title}"
+PROGRAMME: {program}
+
+Write one sentence that follows naturally from the end of the chosen paragraph and points a reader
+who wants to build these skills to the programme. It must:
+- contain exactly one of these anchor phrases, word for word: {anchors}
+- be 12-{max_words} words, plain and factual, in the article's tone
+- not use numbers, rankings or claims (no "best", "top", "leading", salaries, placements, guarantees)
+- not repeat what the paragraph already says, and not start with "This" or "Click"
+
+Choose the paragraph where the sentence fits best. Paragraphs marked BEST FIT talk about skills,
+learning or the programme's topic; use the one marked LAST RESORT (the conclusion) only if none of
+the others work. If nothing fits, return no edits.
+
+PARAGRAPHS (id | fit | text)
+{paragraphs}
+
+Return JSON only:
+{{"edits": [{{"paragraph_id": "B3", "anchor": "...", "sentence": "..."}}]}}
+"""
+
+
+def build_bridge_prompt(title: str, program, anchors: list[str], paragraphs: list[tuple[str, str, str]],
+                        max_words: int) -> str:
+    lines = "\n".join(f"{pid} | {fit} | {text}" for pid, fit, text in paragraphs)
+    return BRIDGE_PROMPT.format(title=title, program=program, anchors="; ".join(f'"{a}"' for a in anchors),
+                                paragraphs=lines, max_words=max_words)
 
 
 class Gemini:
@@ -149,4 +193,4 @@ def gemini_from_config(cfg, secrets: dict) -> Gemini:
     model = secrets.get("GEMINI_MODEL") or llm["default_model"]
     return Gemini(secrets["GEMINI_API_KEY"], model, llm.get("temperature"),
                   thinking_level=llm.get("thinking_level"), timeout_s=llm.get("timeout_seconds", 300),
-                  fallback_models=llm.get("fallback_models") or [])
+                  retries=llm.get("retries", 2), fallback_models=llm.get("fallback_models") or [])

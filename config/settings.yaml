@@ -38,7 +38,15 @@ linking:
   max_candidates_for_llm: 14
   # Wording rules
   blog_anchor_verbatim: true        # blog links: anchor must be words already in the sentence
-  program_max_added_words: 6        # program links may insert a short phrase (learning-related sentences only)
+  # Programme links: 0 = only on words the writer already used (like blog links). Inserted phrases
+  # ("…, often taught in an AI in operations course,") read as forced ads on finished articles.
+  # Set e.g. 6 to allow a short inserted phrase again, in learning/career sentences only.
+  program_max_added_words: 0
+  # If the post's own programme couldn't be linked on the writer's words, add ONE short new sentence
+  # carrying a programme anchor (program_pages.csv `anchors`) at the end of a paragraph about skills,
+  # learning or the programme's topic; the conclusion only as a last resort. Writer sentences untouched.
+  program_bridge_sentence: true
+  bridge_max_words: 30
   # Spacing / hygiene
   max_new_links_per_paragraph: 1
   max_total_links_per_paragraph: 2  # existing + new links in one paragraph
@@ -62,6 +70,7 @@ llm:
   temperature: null                   # null = model default (Google recommends it for Gemini 3+)
   thinking_level: "low"               # low = fast; set null to let the model think as long as it likes
   timeout_seconds: 300
+  retries: 2                          # retries on the same model (15s, 30s, ...) before trying a fallback
   repair_rounds: 1                    # extra Gemini call to replace rejected links (0 = off)
   max_sentences_for_llm: 40           # only the most link-worthy sentences are sent, keeps calls fast
   max_rewrite_similarity_drop: 0.45  # reject rewrites that change more than this share of the sentence

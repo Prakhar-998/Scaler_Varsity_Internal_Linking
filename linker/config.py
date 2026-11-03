@@ -21,7 +21,8 @@ class Program:
     name: str
     url: str
     categories: list[str]
-    keywords: list[str]
+    keywords: list[str]                 # programme phrases ("AI-powered operations programme")
+    topic_keywords: list[str] = field(default_factory=list)   # topic phrases writers use inline
 
 
 @dataclass
@@ -70,7 +71,9 @@ def clean_url(url: str) -> str:
 
 def load_programs(path: Path) -> list[Program]:
     """Program landing pages from a CSV anyone can edit (GitHub's web editor works fine).
-    Columns: id, active, name, url, categories, anchors. Multiple values separated by '|'.
+    Columns: id, active, name, url, categories, topic_anchors, anchors. Multiple values separated by '|'.
+    topic_anchors: phrases writers already use ("AI-powered operations"), linked on their own words.
+    anchors: programme phrases ("AI-powered operations programme"), used in an added sentence.
     Rows with active != yes are ignored, so a program can be paused without deleting it."""
     programs, seen = [], set()
     with open(path, encoding="utf-8-sig", newline="") as fh:
@@ -86,6 +89,7 @@ def load_programs(path: Path) -> list[Program]:
             programs.append(Program(
                 id=row["id"], name=row.get("name") or row["id"], url=clean_url(row.get("url", "")),
                 categories=_split(row.get("categories", "")), keywords=_split(row.get("anchors", "")),
+                topic_keywords=_split(row.get("topic_anchors", "")),
             ))
     return programs
 

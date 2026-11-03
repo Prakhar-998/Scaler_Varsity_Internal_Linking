@@ -209,11 +209,29 @@ def link_html(rewritten: str, anchor: str, url: str, attrs: str = "") -> str:
     return esc[:i] + a + esc[i + len(esc_anchor):]
 
 
+ADDED_MARK = "[added after] "
+
+
+def paragraph_text(p: Paragraph) -> str:
+    return html.unescape(BeautifulSoup(p.inner, "html.parser").get_text(" ", strip=True))
+
+
+def last_sentence(p: Paragraph) -> str:
+    sents = split_sentences(paragraph_text(p))
+    return sents[-1] if sents else ""
+
+
 def apply_edits(parsed: ParsedDraft, edits: list[dict], attrs: str = "") -> str:
     """edits: [{sentence_id, anchor, rewritten, url}] that already passed validation.
+    An edit with "added": True is a NEW sentence appended to the end of paragraph `block`
+    (the programme bridge sentence); the writer's own sentences are never touched by it.
     `attrs` adds attributes to the new <a> tags (the preview uses it to highlight them)."""
     new_inner = {i: p.inner for i, p in parsed.paragraphs.items()}
     for e in edits:
+        if e.get("added"):
+            b = e["block"]
+            new_inner[b] = new_inner[b].rstrip() + " " + link_html(e["rewritten"], e["anchor"], e["url"], attrs)
+            continue
         s = parsed.sentences[e["sentence_id"]]
         replacement = link_html(e["rewritten"], e["anchor"], e["url"], attrs)
         if s.html not in new_inner[s.block]:
