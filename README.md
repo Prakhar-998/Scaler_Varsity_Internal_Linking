@@ -70,8 +70,13 @@ Gates: From Hadamard to CNOT"). Blog pages with very low relevance are dropped.
 
 All weights and quotas live in `config/settings.yaml`.
 
-### 4. Gemini's job, and the wording rules
-Gemini receives the shortlist and up to 40 sentences it may use. Never offered: intro, headings, lists,
+### 4. Keyword matches first, then Gemini, and the wording rules
+**Step 1, no LLM:** wherever a shortlisted page's own keyword phrase already appears in an eligible
+sentence ("Quantum Fourier Transform", "ABC analysis", "generative AI"), those exact words are linked,
+highest-priority pages first. This alone fills most of the budget on well-clustered topics, and works
+even when Gemini is busy.
+
+**Step 2, Gemini** fills the remaining slots. It receives the shortlist and up to 40 sentences it may use. Never offered: intro, headings, lists,
 tables, FAQ sections, sentences with formatting, and sentences that already have a link or sit next to one.
 
 - **Blog links: the writer's words, unchanged.** The anchor must be text already in the sentence; the
@@ -95,12 +100,14 @@ Every proposal is checked; failures are dropped and logged with a reason. Highli
 - anchors: 2–8 words (or one distinctive term that *is* the target's topic, e.g. "RLHF"); no filler
   starts ("On…", "parts of…"); the anchor's main (last) word must be the target's topic ("logistics
   costs" is not an anchor for a logistics page); must not use the article's own topic for another
-  page; one link per term per article; the same words never link two different pages
+  page; one link per term per article; the same words never link two different pages; never half a
+  phrase ("generative AI" inside "generative AI roadmap")
 - spacing: one link per sentence, never in or next to a linked sentence, ≤ 1 new and ≤ 2 total links
   per paragraph
 - within the budget
 
-If anything is rejected, Gemini gets **one** retry with the reasons. Whatever survives is final.
+If slots are still empty, Gemini gets **one** follow-up with what was placed and any rejection reasons.
+Whatever survives is final; nothing is forced to hit the budget.
 Accepted links are applied by string surgery on the raw post, so Gutenberg blocks and all other
 formatting are untouched.
 
@@ -122,10 +129,11 @@ formatting are untouched.
   (`apps_script/trigger_internal_linker.gs`), instead of waiting up to 30 minutes for the schedule.
 
 ### Reliability
-- Gemini: `gemini-3.8-flash` with low thinking, 5-minute deadline, 2 retries on 429/5xx
-  (`llm.retries`), then fallback models (`gemini-3.6-flash`, `gemini-3.5-flash-lite`). The model that
-  answered is logged in each post's **Processed** notes. Because every link must sit on the writer's
-  own words and pass the validator, a fallback model can't change wording; at worst it finds fewer links.
+- Gemini: `gemini-3.8-flash` with low thinking, 5-minute deadline, 4 retries on 429/5xx with growing
+  waits (`llm.retries`), then `gemini-3.6-flash`. `flash-lite` is not used: in the first backfill it
+  answered most posts and proposed very few links. The model that answered is logged in each post's
+  **Processed** notes. If Gemini is unavailable, the keyword-match links are still applied ("keyword
+  links only" in the notes); a post with nothing placed fails and is retried later.
 - WordPress: posts fetched in light pages with retries; if article bodies can't be read, the run
   continues without inbound counts.
 - One bad post can't stop a run.

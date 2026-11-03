@@ -3,6 +3,7 @@ Used by the scheduled runner (main.py) and by the preview tool (preview.py), so 
 exactly what a real run would do."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from . import content, scoring, validate
@@ -109,29 +110,73 @@ def select_sentences(offered: dict, shortlist: list, limit: int) -> dict:
     return {sid: s for sid, s in offered.items() if sid in keep}
 
 
+def keyword_seeds(a: Analysis, ids: dict) -> list[dict]:
+    """Deterministic first pass, no LLM: wherever a shortlisted page's own keyword phrase already
+    appears in an eligible sentence ("Quantum Fourier Transform", "ABC analysis", "generative AI"),
+    propose linking exactly those words. Highest-priority targets first; the validator decides."""
+    seeds = []
+    sentences = sorted(a.offered.values(), key=lambda s: s.order)
+    for tid, cand in ids.items():
+        kws = sorted({k for k in cand.target.keywords if k}, key=lambda k: -len(k))   # longest phrase first
+        if cand.target.type == "program":
+            bridge = {b.lower() for b in cand.target.extras.get("bridge_anchors", [])}
+            kws = [k for k in kws if k.lower() not in bridge] or kws
+        found = 0
+        for s in sentences:
+            for kw in kws:
+                m = re.search(r"(?<![\w-])" + re.escape(kw) + r"s?(?![\w-])", s.text, re.I)
+                if m:
+                    seeds.append({"sentence_id": s.id, "target_id": tid, "anchor": m.group(0),
+                                  "rewritten": s.text, "seed": True})
+                    found += 1
+                    break
+            if found >= 3:                 # a few alternatives per page is plenty
+                break
+    return seeds
+
+
 def propose(a: Analysis, llm, cfg: Config, link_attrs: str = "") -> Result:
-    """Ask the LLM for edits, validate them, and build the new post content (not saved anywhere).
-    If some edits are rejected, one repair round asks for replacements, with the reasons."""
+    """1. link the pages whose keyword already appears in the article (no LLM);
+    2. ask the LLM for the remaining slots; 3. one more round for anything still missing
+    (with the validator's reasons); 4. the programme's added sentence if it's still unlinked."""
     offered = select_sentences(a.offered, a.shortlist, cfg.get("llm", "max_sentences_for_llm", default=40))
     prompt, ids = build_prompt(a.draft.title, a.n, a.shortlist, offered,
                                cfg.get("linking", "program_max_added_words", default=0))
     own_text = f"{a.draft.title} {a.draft.primary_keyword}"
 
     def run_check(edits):
-        return validate.check(edits, ids, a.parsed, a.n, cfg.settings, offered, own_text, a.common_words)
+        return validate.check(edits, ids, a.parsed, a.n, cfg.settings, a.offered, own_text, a.common_words)
 
-    checked = run_check(llm.propose(prompt))
-    all_rejected = list(checked.rejected)
-    for _ in range(cfg.get("llm", "repair_rounds", default=1)):
+    seeded = run_check(keyword_seeds(a, ids))
+    checked = validate.Checked(seeded.accepted, [], [])     # unused seed alternatives aren't "rejections"
+    if seeded.accepted:
+        print(f"[link] {len(seeded.accepted)} link(s) on keywords already in the text", flush=True)
+    all_rejected, note_llm = [], None
+    rounds = 1 + cfg.get("llm", "repair_rounds", default=1)
+    for i in range(rounds):
         missing = a.n - len(checked.accepted)
-        if missing <= 0 or not checked.rejected:
+        if missing <= 0:
             break
-        print(f"[llm] {len(checked.rejected)} rejected; asking for up to {missing} replacements", flush=True)
         kept = [e["raw"] for e in checked.accepted]
-        repair = prompt + "\n\n" + repair_note(checked, ids, missing)
-        checked = run_check(kept + llm.propose(repair))
-        all_rejected += [(e, f"{r} (2nd pass)") for e, r in checked.rejected]
+        ask = prompt if not kept and i == 0 else prompt + "\n\n" + repair_note(checked, ids, missing)
+        print(f"[llm] asking for up to {missing} more link(s)", flush=True)
+        try:
+            more = llm.propose(ask)
+        except Exception as ex:
+            if not kept:
+                raise                      # nothing placed: fail the post so it's retried later
+            print(f"[llm] unavailable ({type(ex).__name__}); keeping the keyword links", flush=True)
+            note_llm = f"LLM unavailable ({type(ex).__name__}): keyword links only"
+            break
+        checked = run_check(kept + more)
+        all_rejected += [(e, r + (" (2nd pass)" if i else "")) for e, r in checked.rejected]
+        if i and not checked.rejected and len(checked.accepted) == len(kept):
+            break                          # the LLM found nothing more: stop asking
+    checked = validate.check([e["raw"] for e in checked.accepted], ids, a.parsed, a.n, cfg.settings,
+                             a.offered, own_text, a.common_words)   # recompute notes on the final set
     checked.rejected = all_rejected
+    if note_llm:
+        checked.notes.append(note_llm)
     add_bridge(a, checked, llm, cfg)
     new_raw = content.apply_edits(a.parsed, checked.accepted, link_attrs) if checked.accepted else None
     return Result(checked, new_raw, prompt)
@@ -301,8 +346,8 @@ def repair_note(checked, ids, missing: int) -> str:
                        for e in checked.accepted) or "none"
     bad = "\n".join(f'- {e.get("target_id", "?")} / {e.get("sentence_id", "?")} anchor "{e.get("anchor", "")}": {r}'
                      for e, r in checked.rejected)
-    return (f"SECOND PASS. Already placed (keep, don't repeat these targets or sentences): {placed}.\n"
-            f"These proposals were rejected by the validator:\n{bad}\n"
+    return (f"FOLLOW-UP. Already placed (keep, don't repeat these targets or sentences): {placed}.\n"
+            f"Rejected by the validator:\n{bad or '- none'}\n"
             f"Propose up to {missing} NEW edits that fix these problems, using other targets or other "
             "sentences if needed. Skip rather than force. Return JSON in the same format with only the new edits.")
 

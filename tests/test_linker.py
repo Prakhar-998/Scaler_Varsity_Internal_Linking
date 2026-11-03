@@ -173,9 +173,12 @@ def test_process_post_end_to_end(dry_run):
     c = cfg()
     wp, ctl, llm = FakeWP(DRAFT_RAW), FakeControl(), FakeLLM()
     res = process_post(Row(), wp, inventory(), {7: "Forward Deployed Engineering"}, llm, c, ctl, dry_run)
-    assert res["status"] == "linked" and len(res["accepted"]) == 2
-    assert "REQUIRED" in llm.prompt and "Is prompt injection a real risk" not in llm.prompt
-    assert len(ctl.changes) == 2
+    # every page whose keyword is already in the text is linked without the LLM (incl. the programme)
+    assert res["status"] == "linked" and len(res["accepted"]) == 3
+    assert {a["anchor"] for a in res["accepted"]} == {"Prompt injection", "forward deployed engineering programme",
+                                                      "retrieval augmented generation"}
+    assert llm.prompt is None                       # budget filled by keyword matches: no LLM call
+    assert len(ctl.changes) == 3
     if dry_run:
         assert wp.updated is None
     else:
@@ -366,7 +369,7 @@ def test_preview_end_to_end(tmp_path, monkeypatch):
     preview.main(["--post", BASE + "llm-evals-for-fdes/", "--keyword", "llm evaluation", "--out", str(tmp_path)])
     report = json.loads((tmp_path / "preview.json").read_text())
     page = (tmp_path / "preview.html").read_text()
-    assert len(report["accepted"]) == 2
+    assert len(report["accepted"]) == 3
     assert 'class="ln-new"' in page and "<script>" not in page
     assert report["existing_internal"] == 0
 
@@ -516,8 +519,9 @@ def test_common_words_and_repeated_term_rule():
     assert "quantum" in cw and "hadamard" not in cw
 
 
-def test_repair_round_fills_rejected_slots():
+def test_repair_round_fills_rejected_slots(monkeypatch):
     from linker import pipeline
+    monkeypatch.setattr(pipeline, "keyword_seeds", lambda a, ids: [])     # exercise the LLM path only
     c = cfg()
     p = content.parse(DRAFT_RAW, SETTINGS_SKIP)
 
@@ -531,7 +535,7 @@ def test_repair_round_fills_rejected_slots():
                 bad = dict(good[1], anchor="On the job", rewritten=good[1]["rewritten"].replace(
                     "a structured forward deployed engineering programme", "structured training"))
                 return [good[0], bad]
-            assert "SECOND PASS" in prompt and "filler word" in prompt
+            assert "FOLLOW-UP" in prompt and "filler word" in prompt
             return [good[1]]                     # second pass: the fixed edit
 
     a = pipeline.analyse(DRAFT_RAW, "LLM Evals for FDEs", ["Forward Deployed Engineering"], "llm evaluation",
@@ -694,7 +698,7 @@ def test_audit_logs_to_sheet_and_never_writes_wordpress(tmp_path, monkeypatch):
     sheet = created["sheet"]
     assert created["user"] is None and created["pw"] is None          # read-only client
     assert len(sheet.summary) == 1 and sheet.summary[0][3] == BASE + "llm-evals-for-fdes/"
-    assert len(sheet.links) == 2 and all(len(r) == 12 for r in sheet.links)
+    assert len(sheet.links) == 3 and all(len(r) == 12 for r in sheet.links)
     assert (tmp_path / "index.html").exists() and (tmp_path / "llm-evals-for-fdes.html").exists()
 
 
@@ -1193,7 +1197,7 @@ def test_programme_link_added_as_new_sentence_in_best_fit_paragraph():
     c = cfg()
     wp, ctl, llm = FakeWP(BRIDGE_RAW), FakeControl(), BridgeLLM()
     res = process_post(Row(), wp, inventory(), {7: "Forward Deployed Engineering"}, llm, c, ctl, False)
-    assert res["status"] == "linked" and len(res["accepted"]) == 2
+    assert res["status"] == "linked" and len(res["accepted"]) == 3     # 2 keyword links + the added sentence
     bridge_prompt = llm.prompts[-1]
     assert re.search(r"^B\d+ \| BEST FIT \| Many engineers build these skills", bridge_prompt, re.M)  # learning paragraph
     assert re.search(r"LAST RESORT \| In the end", bridge_prompt)                       # conclusion last
@@ -1221,7 +1225,7 @@ def test_bad_added_sentences_are_rejected(sentence, anchor, reason):
     wp, ctl = FakeWP(BRIDGE_RAW), FakeControl()
     res = process_post(Row(), wp, inventory(), {7: "Forward Deployed Engineering"},
                        BridgeLLM(sentence, anchor), c, ctl, False)
-    assert len(res["accepted"]) == 1
+    assert len(res["accepted"]) == 2 and all("programs" not in a["url"] for a in res["accepted"])
     assert any(reason in r["reason"] for r in res["rejected"])
     assert "required program link not placed" in ctl.posts[-1][6]
 
@@ -1242,7 +1246,7 @@ def test_bridge_can_be_switched_off():
     llm = BridgeLLM()
     res = process_post(Row(), FakeWP(BRIDGE_RAW), inventory(), {7: "Forward Deployed Engineering"}, llm, c,
                        FakeControl(), True)
-    assert len(res["accepted"]) == 1 and len(llm.prompts) == 1
+    assert len(res["accepted"]) == 2 and not any("ADD ONE NEW SENTENCE" in p for p in llm.prompts)
 
 
 def test_apply_reviewed_replays_added_sentence():
@@ -1267,3 +1271,47 @@ def test_program_csv_has_topic_and_programme_anchors():
     assert "AI-powered operations" in progs["ops"].topic_keywords
     assert "AI-powered operations programme" in progs["ops"].keywords
     assert all(p.topic_keywords for p in progs.values())
+
+
+# ---------- patch 18: more links without forcing them ----------
+
+def test_keyword_matches_link_without_llm_and_llm_fills_the_rest():
+    from linker import pipeline
+    c = cfg()
+    a = pipeline.analyse(DRAFT_RAW, "LLM Evals for FDEs", ["Forward Deployed Engineering"], "llm evaluation",
+                         99, inventory(), c)
+    _, ids = pipeline.build_prompt(a.draft.title, a.n, a.shortlist, a.offered)
+    seeds = pipeline.keyword_seeds(a, ids)
+    assert {e["anchor"] for e in seeds} >= {"Prompt injection", "retrieval augmented generation"}
+    assert all(e["rewritten"] == a.offered[e["sentence_id"]].text for e in seeds)    # writer's words only
+
+
+@pytest.mark.parametrize("sentence,anchor,cut", [
+    ("If you are starting from zero, this generative AI roadmap covers the beginner-to-advanced phases.", "generative AI", True),
+    ("There are thousands of articles listing generative AI project ideas, and most stop at the idea.", "generative AI", True),
+    ("Agentic AI decides what to do, executes it across real systems and checks the result.", "Agentic AI", False),
+    ("Teams usually start with generative AI because it is cheaper than training a model.", "generative AI", False),
+])
+def test_anchor_must_not_cut_a_phrase_in_half(sentence, anchor, cut):
+    from linker.validate import cut_mid_phrase
+    assert cut_mid_phrase(sentence, anchor) == cut
+
+
+def test_busy_llm_keeps_keyword_links():
+    c = cfg()
+    c.settings["linking"]["program_bridge_sentence"] = False
+
+    class Busy:
+        used_model = None
+        def propose(self, prompt):
+            raise RuntimeError("503 overloaded")
+
+    raw = DRAFT_RAW.replace("through a forward deployed engineering programme", "through structured training")
+    wp, ctl = FakeWP(raw), FakeControl()
+    res = process_post(Row(), wp, inventory(), {7: "Forward Deployed Engineering"}, Busy(), c, ctl, False)
+    assert res["status"] == "linked" and len(res["accepted"]) == 2
+    assert "keyword links only" in ctl.posts[-1][6]
+
+
+def test_flash_lite_is_not_a_fallback():
+    assert all("lite" not in m for m in cfg().get("llm", "fallback_models"))

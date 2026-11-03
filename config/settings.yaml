@@ -65,13 +65,15 @@ weights:
 llm:
   model_env: "GEMINI_MODEL"          # set GEMINI_MODEL in the workflow to change model without code edits
   default_model: "gemini-3.8-flash"   # gemini-2.5-flash is closed to new API keys
-  # Tried in order if the main model stays overloaded (503/429) or isn't available.
-  fallback_models: ["gemini-3.6-flash", "gemini-3.5-flash-lite"]
+  # Tried in order if the main model stays overloaded (503/429) or isn't available. flash-lite is
+  # left out on purpose: it proposed very few links in the first backfill. Keyword matches don't
+  # need the LLM at all, so a busy model costs only the extra links Gemini would have found.
+  fallback_models: ["gemini-3.6-flash"]
   temperature: null                   # null = model default (Google recommends it for Gemini 3+)
   thinking_level: "low"               # low = fast; set null to let the model think as long as it likes
   timeout_seconds: 300
-  retries: 2                          # retries on the same model (15s, 30s, ...) before trying a fallback
-  repair_rounds: 1                    # extra Gemini call to replace rejected links (0 = off)
+  retries: 4                          # retries on the same model (15s, 30s, 45s, 60s) before the fallback
+  repair_rounds: 1                    # extra Gemini call for links still missing (0 = off)
   max_sentences_for_llm: 40           # only the most link-worthy sentences are sent, keeps calls fast
   max_rewrite_similarity_drop: 0.45  # reject rewrites that change more than this share of the sentence
 

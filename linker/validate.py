@@ -29,6 +29,25 @@ FILLER_START = {"on", "in", "at", "the", "a", "an", "this", "that", "these", "th
                 "set", "range", "number", "lot", "lots", "piece", "pieces", "series", "aspects"}
 
 
+# Nouns that continue a phrase: "generative AI | roadmap", "agentic AI | course". An anchor that
+# stops right before one of these links half a phrase ("generative AI" inside "generative AI roadmap").
+CONTINUATION = {"roadmap", "roadmaps", "course", "courses", "project", "projects", "engineer", "engineers",
+                "engineering", "model", "models", "tool", "tools", "framework", "frameworks", "application",
+                "applications", "certification", "certifications", "job", "jobs", "role", "roles", "interview",
+                "interviews", "question", "questions", "system", "systems", "skill", "skills", "guide", "guides",
+                "program", "programme", "programs", "programmes", "platform", "platforms", "stack", "pipeline",
+                "pipelines", "workflow", "workflows", "strategy", "strategies", "tutorial", "salary", "salaries",
+                "team", "teams", "market", "adoption", "ideas", "idea", "career", "careers", "agent", "agents"}
+
+
+def cut_mid_phrase(sentence: str, anchor: str) -> bool:
+    i = sentence.find(anchor)
+    if i < 0:
+        return False
+    nxt = re.match(r"\s+([A-Za-z]+)", sentence[i + len(anchor):])
+    return bool(nxt) and nxt.group(1).lower() in CONTINUATION
+
+
 def _bigrams(toks: list[str]) -> set[tuple[str, str]]:
     toks = [t for t in toks if t not in STOPWORDS and len(t) > 1]
     return set(zip(toks, toks[1:]))
@@ -209,6 +228,8 @@ def check(raw_edits: list[dict], ids: dict[str, Candidate], parsed: ParsedDraft,
             reason = "anchor repeats a term already linked in this article"
         elif rewritten.count(anchor) != 1:
             reason = "anchor not present exactly once in rewrite"
+        elif cut_mid_phrase(rewritten, anchor):
+            reason = "anchor cuts a phrase in half (e.g. 'generative AI' in 'generative AI roadmap')"
         elif rewritten != s.text and tokens(rewritten) == tokens(s.text):
             reason = "rewrite only changed punctuation"
         elif any(ch in rewritten for ch in "<>[]"):
