@@ -195,7 +195,8 @@ config/          settings.yaml (weights, quotas, rules), program_pages.csv (prog
                  categories.yaml (adjacent categories, pillar pages, anchor overrides)
 tests/           offline tests, many built from real preview/audit cases
 .github/workflows/  link.yml, backfill.yml, preview.yml, audit.yml, tests.yml
-apps_script/     trigger_internal_linker.gs (instant trigger, pasted into the MasterSheet's script)
+apps_script/     trigger_internal_linker.gs (instant trigger) and LinkerStatus.gs (Internal Linking
+                 status column), both pasted into the MasterSheet's Apps Script project
 ```
 
 ## Running locally

@@ -167,3 +167,16 @@ The workflow's **action** box has three choices:
 
 Drafts that got published before the bot reached them show as `skipped` in **Processed**; they aren't
 "done", so backfill picks them up too.
+
+## 9. Status column in the MasterSheet
+
+The linker never writes to the MasterSheet. `apps_script/LinkerStatus.gs` (pasted into the
+MasterSheet's Apps Script project) copies its results from the control sheet into an
+**Internal Linking** column, e.g. "Linked: 4 link(s) · 5 Nov · 4/4 kept after publishing",
+"Waiting for the linker", "Published before linking (backfill can add links)".
+
+1. Script properties: `LINKER_CONTROL_SHEET_ID` = the control sheet's ID.
+2. Run `syncLinkerStatusNow` once from the editor and approve access.
+3. Varsity → Admin → *Turn on internal-link status (every 15 min)*.
+
+It writes only that one column (and its header cell once, if empty).
