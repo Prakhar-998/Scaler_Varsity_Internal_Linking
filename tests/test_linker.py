@@ -508,7 +508,7 @@ def test_gemini_falls_back_when_overloaded(monkeypatch):
 
     monkeypatch.setattr(g.client.models, "generate_content", fake)
     assert g.propose("x") == [] and g.used_model == "gemini-3.6-flash"
-    assert seen == ["gemini-3.8-flash"] * 3 + ["gemini-3.6-flash"]
+    assert seen == ["gemini-3.8-flash"] * 2 + ["gemini-3.6-flash"]      # one quick retry, then fallback
 
 
 def test_common_words_and_repeated_term_rule():
@@ -1315,3 +1315,52 @@ def test_busy_llm_keeps_keyword_links():
 
 def test_flash_lite_is_not_a_fallback():
     assert all("lite" not in m for m in cfg().get("llm", "fallback_models"))
+
+
+def test_busy_model_is_skipped_for_the_rest_of_the_run(monkeypatch):
+    import types as _t
+    from google.genai import errors
+    from linker import llm as llm_mod
+    calls = []
+
+    class Err(errors.APIError):
+        def __init__(self, code):
+            self.code = code
+
+    g = llm_mod.Gemini.__new__(llm_mod.Gemini)
+    g.models, g.retries, g.used_model, g.busy_until, g.busy_pause_s = ["main", "fb"], 2, None, {}, 600
+
+    def fake_call(model, prompt, retries=None):
+        calls.append((model, retries))
+        if model == "main":
+            raise Err(503)
+        return _t.SimpleNamespace(text='{"edits": []}')
+
+    g._call = fake_call
+    g.propose("p1")
+    g.propose("p2")
+    assert calls == [("main", 1), ("fb", None), ("fb", None)]     # main tried once, then skipped
+    assert g.used_model == "fb"
+
+
+def test_quota_429_is_not_retried_and_model_is_skipped(monkeypatch):
+    from google.genai import errors
+    import linker.llm as llm_mod
+    monkeypatch.setattr(llm_mod.time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError("no waiting on 429")))
+    g = llm_mod.Gemini("k", "gemini-3.8-flash", fallback_models=["gemini-3.6-flash"])
+    seen = []
+
+    class R:
+        text = '{"edits": []}'
+
+    def fake(model, contents, config):
+        seen.append(model)
+        if model == "gemini-3.8-flash":
+            raise errors.ClientError(429, {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED",
+                                                      "message": "Quota exceeded for GenerateRequestsPerDayPerProjectPerModel"}})
+        return R()
+
+    monkeypatch.setattr(g.client.models, "generate_content", fake)
+    g.propose("a")
+    g.propose("b")
+    assert seen == ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.6-flash"]   # one try, then skipped

@@ -72,7 +72,8 @@ llm:
   temperature: null                   # null = model default (Google recommends it for Gemini 3+)
   thinking_level: "low"               # low = fast; set null to let the model think as long as it likes
   timeout_seconds: 300
-  retries: 4                          # retries on the same model (15s, 30s, 45s, 60s) before the fallback
+  retries: 2                          # retries (15s, 30s) on the last model tried; the main model gets 1
+                                      # quick retry, then the fallback, and is skipped for 10 min if busy
   repair_rounds: 1                    # extra Gemini call for links still missing (0 = off)
   max_sentences_for_llm: 40           # only the most link-worthy sentences are sent, keeps calls fast
   max_rewrite_similarity_drop: 0.45  # reject rewrites that change more than this share of the sentence
@@ -82,3 +83,4 @@ run:
   cooloff_minutes: 10            # skip a draft someone saved this recently (they may still be editing)
   link_check_after_minutes: 60   # after linking + publish, check the bot's links survived editing
   link_checks_per_run: 15
+  max_run_minutes: 18            # stop starting new drafts after this (job limit is 30); the rest go next run

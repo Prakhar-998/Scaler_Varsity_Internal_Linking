@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import re
+import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -220,7 +221,14 @@ def main(argv=None):
 
     OUT.mkdir(exist_ok=True)
     report = []
-    for row in todo:
+    started = time.monotonic()
+    budget_min = cfg.get("run", "max_run_minutes", default=15)
+    for i, row in enumerate(todo):
+        if time.monotonic() - started > budget_min * 60:
+            # Stop before the job's hard time limit; the rest are picked up by the next run
+            # (nothing is half-written: a post is saved only after it's fully processed).
+            print(f"[run] {budget_min}-minute budget used; {len(todo) - i} draft(s) left for the next run")
+            break
         try:
             res = process_post(row, wp, inventory, cat_names, llm, cfg, control, dry_run,
                                skip_cooloff=row.post_id in exempt)

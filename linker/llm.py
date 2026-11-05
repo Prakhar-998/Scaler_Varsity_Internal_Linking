@@ -3,6 +3,7 @@ It sees a short, pre-scored shortlist (never the whole site) and returns structu
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from .scoring import Candidate
@@ -131,6 +132,8 @@ class Gemini:
         self.retries = retries
         self.models = [model] + [m for m in (fallback_models or []) if m and m != model]
         self.used_model = None
+        self.busy_until: dict[str, float] = {}   # model -> time it may be tried again this run
+        self.busy_pause_s = 600
 
     def _config(self):
         t = self._types
@@ -142,8 +145,9 @@ class Gemini:
             kw["thinking_config"] = t.ThinkingConfig(thinking_level=self.thinking_level)
         return t.GenerateContentConfig(**kw)
 
-    def _call(self, model: str, prompt: str):
+    def _call(self, model: str, prompt: str, retries: int | None = None):
         from google.genai import errors
+        retries = self.retries if retries is None else retries
         attempt = 0
         while True:
             attempt += 1
@@ -156,30 +160,46 @@ class Gemini:
                     print(f"[llm] {model} rejected thinking_level; retrying without it", flush=True)
                     self.thinking_level = None
                     continue
-                if code in self.RETRYABLE and attempt <= self.retries:
+                if code == 429:
+                    # Quota used up: retrying straight away only burns time. Daily quota -> skip
+                    # this model for the rest of the run; per-minute quota -> skip it for 2 min.
+                    daily = bool(re.search(r"per ?day|PerDay|daily", str(e), re.I))
+                    self.busy_until[model] = time.time() + (10**9 if daily else 120)
+                    print(f"[llm] 429 from {model}: {'daily' if daily else 'per-minute'} quota used up; "
+                          f"skipping it {'for this run' if daily else 'for 2 min'}", flush=True)
+                    raise
+                if code in self.RETRYABLE and attempt <= retries:
                     wait = 15 * attempt
-                    print(f"[llm] {code} from {model}; retry {attempt}/{self.retries} in {wait}s", flush=True)
+                    print(f"[llm] {code} from {model}; retry {attempt}/{retries} in {wait}s", flush=True)
                     time.sleep(wait)
                     continue
                 raise
 
     def propose(self, prompt: str) -> list[dict]:
-        """Try the main model; if it stays overloaded/unavailable, fall back to the next model."""
+        """Try the models in order. A model that stays overloaded is skipped for the next 10 minutes
+        of this run (no more waiting on it for every post); while a fallback exists, the main model
+        gets only one quick retry before handing over."""
         from google.genai import errors
+        now = time.time()
+        ready = [m for m in self.models if self.busy_until.get(m, 0) <= now] or self.models[-1:]
         last = None
-        for i, model in enumerate(self.models):
+        for i, model in enumerate(ready):
+            has_next = i + 1 < len(ready)
             try:
-                resp = self._call(model, prompt)
+                resp = self._call(model, prompt, retries=min(1, self.retries) if has_next else None)
                 self.used_model = model
-                if i:
+                if model != self.models[0]:
                     print(f"[llm] answered by fallback model {model}", flush=True)
                 break
             except errors.APIError as e:
                 code = getattr(e, "code", None)
                 if code in self.RETRYABLE or code == 404:
                     last = e
-                    if i + 1 < len(self.models):
-                        print(f"[llm] {model} unavailable ({code}); switching to {self.models[i + 1]}", flush=True)
+                    if code != 429:              # 429 already set its own pause in _call
+                        self.busy_until[model] = time.time() + self.busy_pause_s
+                    if has_next:
+                        print(f"[llm] {model} unavailable ({code}); using {ready[i + 1]} for the next "
+                              f"{self.busy_pause_s // 60} min", flush=True)
                     continue
                 raise
         else:
